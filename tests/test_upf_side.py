@@ -25,21 +25,7 @@ def list_instances(instances_folder: str | Path | None = None) -> list[str]:
     return [p.stem for p in Path(instances_folder).glob("*.json")]
 
 def state_to_dict(state):
-    str_state = str(state).replace('{', '').replace('}', '')
-    keys = [k for k in
-            str_state.replace(' ', '').replace(':', '').replace(',', '').replace('true', '@').replace('false',
-                                                                                                      '@').split('@')]
-    keys.remove('')
-    vals = []
-    for word in str_state.replace('true', '@true@').replace('false', '@false@').split('@'):
-        if word == 'true':
-            vals.append(True)
-        if word == 'false':
-            vals.append(False)
-    state_dict = {}
-    for i in range(len(keys)):
-        state_dict[keys[i]] = vals[i]
-    return state_dict
+    return {str(key): val for key, val in state._values.items()}
 
 def state_to_str(state):
     state_dict = state_to_dict(state)
@@ -117,4 +103,4 @@ def test_ladder():
         print(plan)
 
 if __name__ == "__main__":
-    simulate(get_ladder_prob())
+    simulate(get_ladder_prob(), print_state=True)

@@ -2,8 +2,11 @@ from unified_planning.shortcuts import *
 from monkey_bot.monkey_bot_problem_instance import MonkeyBotProblemInstance
 
 
-def dist_prec(x1, y1, x2, y2, val, ):
-    return LE(Plus(Times(x1-x2,x1-x2), Times(y1-y2,y1-y2)), Times(val, val))
+def dist_prec(x1, y1, x2, y2, val):
+    return LE(get_dist_squard_fluent(x1,y1,x2,y2), Times(val, val))
+
+def get_dist_squard_fluent(x1,y1,x2,y2):
+    return Plus(Times(x1-x2,x1-x2), Times(y1-y2,y1-y2))
 
 def get_dummy_numeric_problem():
     Counter = UserType('Counter')
@@ -72,7 +75,7 @@ def get_problem(instance: MonkeyBotProblemInstance):
         move_foot.add_precondition(
             dist_prec(center_x, center_y, gripping_point_x(p_to), gripping_point_y(p_to), leg_extension))
         move_foot.add_effect(foot_at(p_from), False)
-        move_foot.add_effect(foot_at(p_to), False)
+        move_foot.add_effect(foot_at(p_to), True)
         problem.add_action(move_foot)
 
     for direc in ["up", "down", "left", "right"]:
