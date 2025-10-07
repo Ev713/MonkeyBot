@@ -122,6 +122,12 @@ def get_problem(instance: MonkeyBotProblemInstance):
 
     return problem
 
+def get_plan(instance: MonkeyBotProblemInstance):
+    with OneshotPlanner(name="enhsp") as planner:
+        result = planner.solve(get_problem(instance))
+        plan = result.plan
+        return plan
+
 
 
 

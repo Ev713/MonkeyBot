@@ -54,3 +54,10 @@ class MonkeyBotProblemInstance:
     def to_json_file(self, path: Path | str, **kwargs):
         with open(path, "w") as f:
             json.dump(self.to_dict(), f, **kwargs)
+
+def load_instance(name: str, instances_folder: str | Path | None = None) -> MonkeyBotProblemInstance:
+    path = Path(instances_folder) / f"{name}.json"
+    return MonkeyBotProblemInstance.from_json_file(path)
+
+def list_instances(instances_folder: str | Path | None = None) -> list[str]:
+    return [p.stem for p in Path(instances_folder).glob("*.json")]

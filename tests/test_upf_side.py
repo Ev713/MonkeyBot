@@ -4,25 +4,10 @@ from pathlib import Path
 from unified_planning.shortcuts import OneshotPlanner, SequentialSimulator
 
 from monkey_bot import upf_solver
-from monkey_bot.monkey_bot_problem_instance import MonkeyBotProblemInstance
+from monkey_bot.monkey_bot_problem_instance import load_instance
 from monkey_bot.upf_solver import get_dummy_numeric_problem
 
-
-def get_instances_folder() -> Path:
-    return Path("../instances")
-
-
-def load_instance(name: str, instances_folder: str | Path | None = None) -> MonkeyBotProblemInstance:
-    if instances_folder is None:
-        instances_folder = get_instances_folder()
-    path = Path(instances_folder) / f"{name}.json"
-    return MonkeyBotProblemInstance.from_json_file(path)
-
-
-def list_instances(instances_folder: str | Path | None = None) -> list[str]:
-    if instances_folder is None:
-        instances_folder = get_instances_folder()
-    return [p.stem for p in Path(instances_folder).glob("*.json")]
+instances_folder = "../instances"
 
 def state_to_dict(state):
     return {str(key): val for key, val in state._values.items()}
@@ -80,8 +65,8 @@ def simulate(problem, print_state=False, random_walk=False):
             for i, a in enumerate(actions):
                 print(str(i) + '.', a[0].name, a[1])
 
-def get_ladder_prob():
-    return upf_solver.get_problem(load_instance('10StepsLadder', ))
+def get_ladder_prob(steps=5):
+    return upf_solver.get_problem(load_instance(f"{steps}StepsLadder", instances_folder))
 
 def test_upf_solver():
     problem = get_dummy_numeric_problem()
@@ -103,4 +88,4 @@ def test_ladder():
         print(plan)
 
 if __name__ == "__main__":
-    simulate(get_ladder_prob(), print_state=True)
+    test_ladder()
