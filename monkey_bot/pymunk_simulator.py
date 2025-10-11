@@ -1,6 +1,7 @@
 import math
 from operator import truediv
-
+import pygame
+import imageio.v2 as imageio  # install: pip install imageio
 import pygame
 import pymunk
 import pymunk.pygame_util
@@ -56,11 +57,11 @@ class MonkeyBotSimulator:
         self.spring_motors = []
 
 
-
     def start_simulation(self, coordinator:InstanceSimulationCoordinator):
         pygame.init()
         self.space = pymunk.Space()
-        self.space.gravity = (0, 981)
+        self.space.gravity = (0, 98)
+        self.writer = imageio.get_writer("simulation.mp4", fps=60)
         self.window = pygame.display.set_mode((self.sim_config.screen_width, self.sim_config.screen_height))
         self.draw_options = pymunk.pygame_util.DrawOptions(self.window)
         self.create_boundaries(self.sim_config.screen_width, self.sim_config.screen_height)
@@ -96,9 +97,9 @@ class MonkeyBotSimulator:
         # iterate over available grip points
         for i, (gp, _) in enumerate(self.grip_points):
             dist = (foot_body.position - gp.position).length
-            if dist <= self.epsilon:
+            if dist <= self.sim_config.epsilon:
                 self.active_grips[foot_index] = self._create_pivot_joint(foot_body, gp, gp.position)
-                print(f"Foot {foot_index} gripped at {gp.position}")
+                #print(f"Foot {foot_index} gripped at {gp.position}")
                 return
         raise Exception(f"Grip Failed for foot {foot_index}")
 
@@ -110,7 +111,7 @@ class MonkeyBotSimulator:
         if grip_joint is not None:
             self.space.remove(grip_joint)
             self.active_grips[i] = None
-            print(f"Foot {i} released")
+            #print(f"Foot {i} released")
 
     def create_grip_points(self, grip_points):
         for (x, y) in grip_points:
@@ -137,7 +138,7 @@ class MonkeyBotSimulator:
         robot_body = pymunk.Body(moment=float("inf"))
         robot_body.position = init_center_pos
         body_shape = pymunk.Circle(robot_body, 10)
-        body_shape.mass = 10
+        body_shape.mass = self.sim_config.body_mass
         body_shape.color = (255, 0, 0, 100)
         body_shape.filter = pymunk.ShapeFilter(group=1)
         self.space.add(robot_body, body_shape)
@@ -145,13 +146,13 @@ class MonkeyBotSimulator:
         return robot_body
 
     def _create_leg(self, start, direction, length, leg_thickness=3, ):
-        leg_body = pymunk.Body(mass=1, moment=10)
+        leg_body = pymunk.Body(mass=self.sim_config.leg_mass, moment=10)
         leg_body.position = start  # base of leg at body center
         leg_body.elasticity = 0.5
         leg_body.friction = 0.5
         # leg points toward foot
         leg_shape = pymunk.Segment(leg_body, (0, 0), (direction.x * length, direction.y * length), leg_thickness)
-        leg_shape.mass = 2
+        leg_shape.mass = 1
         leg_shape.color = (0, 0, 255, 100)
         leg_shape.filter = pymunk.ShapeFilter(group=1)
         self.space.add(leg_body, leg_shape)
@@ -161,7 +162,7 @@ class MonkeyBotSimulator:
 
 
     def _create_foot(self, x, y, foot_radius = 5):
-        foot_body = pymunk.Body(mass=1, moment=1)
+        foot_body = pymunk.Body(mass=self.sim_config.foot_mass, moment=1)
         foot_body.position = (x, y)
         foot_body.elasticity = 0.5
         foot_body.friction=0.5
@@ -205,7 +206,7 @@ class MonkeyBotSimulator:
 
         return groove_joint
 
-    def _create_leg_spring(self, body, foot_body, length, stiffness=10000, damping=50):
+    def _create_leg_spring(self, body, foot_body, length):
         """
         Creates:
           1. A spring between the robot body and the foot (controls radial extension).
@@ -220,8 +221,8 @@ class MonkeyBotSimulator:
             body, foot_body,
             body_anchor, foot_anchor,
             rest_length=length,
-            stiffness=stiffness,
-            damping=damping,
+            stiffness=self.sim_config.leg_spring_stiffness,
+            damping=self.sim_config.leg_spring_damping,
         )
 
         self.space.add(spring)
@@ -242,7 +243,7 @@ class MonkeyBotSimulator:
             length = vec.length
             direction = vec.normalized()
 
-            leg = self._create_leg(body_pos, direction, length)
+            leg = self._create_leg(body_pos, direction, 30)
             foot = self._create_foot(*foot_screen_pos)
 
             leg_joint = self._create_pivot_joint(body, leg, body_pos)
@@ -283,7 +284,7 @@ class MonkeyBotSimulator:
         m = self.shoulders[i]
         if m.rate != v:
             m.rate=v
-            print(f"Shoulder {i} rate set to: {m.rate}")
+            #print(f"Shoulder {i} rate set to: {m.rate}")
 
 
     def set_extension_speed(self, i, v):
@@ -304,18 +305,27 @@ class MonkeyBotSimulator:
             self.set_extension_speed(i, signal.extension[i])
 
 
+    def gone_wrong(self):
+        return (self.body.position[0] < 0 or self.body.position[1] < 0 or
+                self.body.position[0] > self.sim_config.screen_width or
+                self.body.position[1] > self.sim_config.screen_height)
+
     def step(self):
         for m in self.spring_motors:
-            m.step(self.dt)
+            m.step(self.sim_config.dt)
         for event in pygame.event.get():
-            if event.type == pygame.QUIT:
+            if event.type == pygame.QUIT or self.gone_wrong():
                 self.run=False
                 pygame.quit()
                 break
+
+        frame = pygame.surfarray.array3d(pygame.display.get_surface())
+        frame = frame.swapaxes(0, 1)  # make it (height, width, 3)
+        self.writer.append_data(frame)
         self.t += 1
         self.draw()
-        self.space.step(self.dt)
-        self.clock.tick(self.fps)
+        self.space.step(self.sim_config.dt)
+        self.clock.tick(self.sim_config.fps)
 
     def get_state(self):
         return {"center_pos" : self.get_center_pos(),

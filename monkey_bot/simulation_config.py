@@ -12,6 +12,11 @@ class SimConfig:
     twist_speed:float
     move_center_speed:float
     fps:int
+    body_mass:float
+    foot_mass:float
+    leg_mass:float
+    leg_spring_stiffness:float
+    leg_spring_damping:float
 
     @property
     def dt(self):

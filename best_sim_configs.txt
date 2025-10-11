@@ -1,0 +1,8 @@
+extension_speed: 95.62471006831454
+  twist_speed: 2.1485114892122823
+  move_center_speed: 416.5466470103471
+  body_mass: 3.5875533632618133
+  foot_mass: 0.2772971496393629
+  leg_mass: 6.49214079345917
+  leg_spring_stiffness: 10952
+  leg_spring_damping: 40

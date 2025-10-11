@@ -1,3 +1,5 @@
+import time
+
 from monkey_bot.monkey_bot_problem_instance import MonkeyBotProblemInstance
 from monkey_bot.pymunk_simulator import MonkeyBotSimulator
 from monkey_bot.robot_controller import Controller, TestController
@@ -5,14 +7,8 @@ from monkey_bot.simulation_config import SimConfig, InstanceSimulationCoordinato
 
 
 class SimRunner:
-    def __init__(self, instance:MonkeyBotProblemInstance):
-        sim_config = SimConfig(screen_height=1000,
-                               screen_width=800,
-                               epsilon=5,
-                               extension_speed=50,
-                               twist_speed=1,
-                               move_center_speed=50,
-                               fps=60)
+    def __init__(self, instance:MonkeyBotProblemInstance, sim_config:SimConfig):
+
 
         self.instance = instance
         self.inst_sim_coordiator = InstanceSimulationCoordinator(instance, sim_config)
@@ -29,42 +25,26 @@ class SimRunner:
         self.simulator.start_simulation( self.inst_sim_coordiator)
 
     def start_controller(self, test):
-        args = [self.instance, self.epsilon, self.extension_speed,
-                                     self.twist_speed, self.move_center_speed, self.screen_width, self.screen_height]
         if not test:
-            self.controller = Controller(*args)
+            self.controller = Controller(self.inst_sim_coordiator)
         else:
-            self.controller = TestController(*args)
+            self.controller = TestController(self.inst_sim_coordiator)
 
-
-    def grid_to_screen(self, x, y):
-        """
-        Convert grid coordinates (x, y) to screen coordinates (px, py).
-
-        The grid is centered on the screen and scaled so that there is
-        at least one grid cell margin on all sides.
-        """
-        cell_size = self._cell_size()
-
-        center_x, center_y = self.screen_width / 2, self.screen_height / 2
-        screen_x = center_x + cell_size * (x - self.grid_width/2)
-        screen_y = center_y - cell_size * (y - self.grid_height / 2)
-
-        return screen_x, screen_y
 
     def execute_simulation(self, test=False):
-
-
-
         self.start_simulator()
         self.start_controller(test=test)
         if not test:
-            self.controller.create_plan()
+            # self.controller.create_plan()
+            self.controller.load_plan("plan_example.txt")
         while self.simulator.run:
-            input('Press any key for next frame')
+            #input('Press any key for next frame')
             state = self.simulator.get_state()
             self.controller.update(state)
             sig = self.controller.get_sig()
             self.simulator.apply_signal(sig)
             self.simulator.step()
+            if self.controller.finished_plan:
+                self.simulator.writer.cose()
+                break
 
