@@ -5,7 +5,7 @@ from unified_planning.shortcuts import OneshotPlanner, SequentialSimulator
 
 from monkey_bot import upf_solver
 from monkey_bot.monkey_bot_problem_instance import load_instance
-from monkey_bot.upf_solver import get_dummy_numeric_problem
+from monkey_bot.upf_solver import get_problem
 
 instances_folder = "../instances"
 
@@ -66,16 +66,7 @@ def simulate(problem, print_state=False, random_walk=False):
                 print(str(i) + '.', a[0].name, a[1])
 
 def get_ladder_prob(steps=5):
-    return upf_solver.get_problem(load_instance(f"{steps}StepsLadder", instances_folder))
-
-def test_upf_solver():
-    problem = get_dummy_numeric_problem()
-    with OneshotPlanner(name="enhsp") as planner:
-        result = planner.solve(problem)
-        plan = result.plan
-        assert plan is not None
-        print("%s returned:" % planner.name)
-        print(plan)
+    return get_problem(load_instance(f"{steps}StepsLadder", instances_folder))
 
 def test_ladder():
     problem = get_ladder_prob()
@@ -88,4 +79,4 @@ def test_ladder():
         print(plan)
 
 if __name__ == "__main__":
-    test_ladder()
+    simulate(get_problem(load_instance("5StepsLadder", instances_folder)))

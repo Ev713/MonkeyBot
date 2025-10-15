@@ -1,4 +1,5 @@
 {
+  "name": "10StepsLadder",
   "leg_extension": 2,
   "grid_size_x": 3,
   "grid_size_y": 10,

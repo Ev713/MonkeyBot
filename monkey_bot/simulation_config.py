@@ -1,4 +1,7 @@
+import math
 from dataclasses import dataclass
+
+from pymunk import Vec2d
 
 from monkey_bot.monkey_bot_problem_instance import MonkeyBotProblemInstance
 
@@ -9,7 +12,7 @@ class SimConfig:
     screen_width:int
     epsilon:float
     extension_speed:float
-    twist_speed:float
+    rotation_speed:float
     move_center_speed:float
     fps:int
     body_mass:float
@@ -17,6 +20,8 @@ class SimConfig:
     leg_mass:float
     leg_spring_stiffness:float
     leg_spring_damping:float
+    min_extension:float=30
+    angle_epsilon:float= 2*math.pi/24
 
     @property
     def dt(self):
@@ -50,6 +55,13 @@ class InstanceSimulationCoordinator:
         screen_y = center_y - cell_size * (y - self.instance.grid_size_y / 2)
 
         return screen_x, screen_y
+
+    def gp_name_to_screen_point(self, gp_name):
+        gp_x = int(gp_name.split('_')[1])
+        gp_y = int(gp_name.split('_')[2])
+        assert (gp_x, gp_y) in self.instance.gripping_points
+        return Vec2d(*self.grid_to_screen(gp_x, gp_y))
+
     @property
     def num_legs(self):
         return len(self.instance.init_feet)
