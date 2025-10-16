@@ -1,3 +1,4 @@
+import itertools
 from typing import Tuple
 
 from unified_planning.shortcuts import *
@@ -11,7 +12,25 @@ def dist_prec(x1, y1, x2, y2, val):
 def get_dist_squard_fluent(x1,y1,x2,y2):
     return Plus(Times(x1-x2,x1-x2), Times(y1-y2,y1-y2))
 
-def leg_order_precondition(center_x:int, center_y:int, legs_x:List[int], legs_y:List[int]):
+def median_is_index_prec(x1, x2, x3, i):
+    if i == 0:
+        med_x = x1
+        not_med_x_1 = x2
+        not_med_x_2 = x3
+    elif i == 1:
+        med_x = x2
+        not_med_x_1 = x1
+        not_med_x_2 = x3
+    else:
+        med_x = x3
+        not_med_x_1 = x1
+        not_med_x_2 = x2
+
+    x_is_med_option_1_prec = And(LE(med_x, not_med_x_1), LE(not_med_x_2, med_x))
+    x_is_med_option_2_prec = And(LE(med_x, not_med_x_2), LE(not_med_x_1, med_x))
+    return Or(x_is_med_option_1_prec, x_is_med_option_2_prec)
+
+def leg_order_precondition(center_x, center_y, legs_x:List, legs_y:List):
     n = len(legs_x)
     if n < 3:
         return True  # can't cross with <3 legs
@@ -47,7 +66,9 @@ def leg_order_precondition(center_x:int, center_y:int, legs_x:List[int], legs_y:
     return at_most_one
 
 
-def get_problem(instance: MonkeyBotProblemInstance):
+def get_problem(instance: MonkeyBotProblemInstance, jump_actions_allowed=None):
+    if jump_actions_allowed is None:
+        jump_actions_allowed = []
     leg_num = len(instance.init_feet)
     leg_extension = instance.leg_extension
     grid_size_x = instance.grid_size_x
@@ -69,7 +90,9 @@ def get_problem(instance: MonkeyBotProblemInstance):
     feet = []
     for i in range(leg_num):
         foot_at = Fluent(f"foot_{i}_at", BoolType(), p=GrippingPoint)
-        feet.append(foot_at)
+        foot_x = Fluent(f"foot_{i}_x", IntType())
+        foot_y = Fluent(f"foot_{i}_y", IntType())
+        feet.append((foot_at, foot_x, foot_y))
         problem.add_fluent(foot_at, default_initial_value=False)
         move_foot = InstantaneousAction(f"move_foot_{i}", p_from=GrippingPoint, p_to=GrippingPoint)
         p_from = move_foot.parameter('p_from')
@@ -78,26 +101,56 @@ def get_problem(instance: MonkeyBotProblemInstance):
         move_foot.add_precondition(is_free(p_to))
         move_foot.add_precondition(
             dist_prec(center_x, center_y, gripping_point_x(p_to), gripping_point_y(p_to), leg_extension))
+        new_feet_x = [foot_x for _, foot_x, _ in feet]
+        new_feet_x[i] = gripping_point_x(p_to)
+        new_feet_y = [foot_y for _, foot_y, _ in feet]
+        new_feet_y[i] = gripping_point_y(p_to)
+        move_foot.add_precondition(leg_order_precondition(center_x, center_y, new_feet_x, new_feet_y))
 
         move_foot.add_effect(foot_at(p_from), False)
         move_foot.add_effect(foot_at(p_to), True)
         move_foot.add_effect(is_free(p_from), True)
         move_foot.add_effect(is_free(p_to), False)
+        move_foot.add_effect(foot_x, gripping_point_x(p_to))
+        move_foot.add_effect(foot_y, gripping_point_y(p_to))
+
         problem.add_action(move_foot)
 
+    jump_actions = {}
+    for leg_1_id, leg_2_id, med_x_id, med_y_id in itertools.product([0, 1, 2], [0, 1, 2], [0, 1, 2], [0, 1, 2],):
+        jump_action_name = f"jump_foot_{leg_1_id}_foot_{leg_2_id}_med_x_{med_x_id}_med_y_{med_y_id}"
+        jump = InstantaneousAction(jump_action_name,
+                                   from_1 =GrippingPoint, from_2=GrippingPoint, p_1=GrippingPoint, p_2=GrippingPoint, p_3=GrippingPoint)
+
+        can_perform_jump = Fluent(f"can_perform_{jump_action_name}", BoolType(), from_1=GrippingPoint,
+                                  from_2=GrippingPoint, p_1=GrippingPoint, p_2=GrippingPoint, p_3=GrippingPoint)
+        problem.add_fluent(can_perform_jump, default_initial_value=False)
+        from_1 = jump.parameter('from_1')
+        from_2 = jump.parameter('from_2')
+        p_1 = jump.parameter('p_1')
+        p_2 = jump.parameter('p_2')
+        p_3 = jump.parameter('p_3')
+        jump.add_precondition(can_perform_jump(from_1, from_2, p_1, p_2, p_3))
+        p1_x = gripping_point_x(p_1)
+        p2_x = gripping_point_x(p_1)
+        p3_x = gripping_point_x(p_1)
+        p1_y = gripping_point_y(p_1)
+        p2_y = gripping_point_y(p_2)
+        p3_y = gripping_point_y(p_3)
+        jump.add_precondition(median_is_index_prec(p1_x, p2_x, p3_x, med_x_id))
+        jump.add_precondition(median_is_index_prec(p1_y, p2_y, p3_y, med_y_id))
+        jump_actions[jump_action_name] = jump
+
+
     for direc in ["up", "down", "left", "right"]:
-        move_center = InstantaneousAction(f"move_center_{direc}", **{f"p{i}": GrippingPoint for i in range(leg_num)})
-        leg_points = [move_center.parameter(f"p{i}") for i in range(leg_num) ]
+        move_center = InstantaneousAction(f"move_center_{direc}")
         move_center.add_precondition(
-            leg_order_precondition(center_x, center_y, [gripping_point_x(leg_point) for leg_point in leg_points],
-                                   [gripping_point_y(leg_point) for leg_point in leg_points ]))
-        for leg_point, foot_at in zip(leg_points, feet):
-            move_center.add_precondition(foot_at(leg_point))
+            leg_order_precondition(center_x, center_y, [foot_x for _, foot_x, _ in feet], [foot_y for _, _, foot_y in feet]))
+        for _, foot_x, foot_y in feet:
             mod = {"up":(0,1), "down":(0, -1), "left":(-1, 0), "right":(1, 0)}[direc]
-            move_center.add_precondition(dist_prec(gripping_point_x(leg_point), gripping_point_y(leg_point),
+            move_center.add_precondition(dist_prec(foot_x, foot_y,
                                                    center_x + mod[0], center_y + mod[1], leg_extension))
-            move_center.add_precondition((Not(And(Equals(center_x, gripping_point_x(leg_point)),
-                                                  Equals(center_y, gripping_point_y(leg_point))))))
+            move_center.add_precondition((Not(And(Equals(center_x, foot_x), Equals(center_y, foot_y)))))
         if direc == "up":
             move_center.add_precondition(LT(center_y, grid_size_y))
             move_center.add_effect(center_y, center_y+1)
@@ -122,8 +175,18 @@ def get_problem(instance: MonkeyBotProblemInstance):
         problem.set_initial_value(gripping_point_y(gp), gp_y)
 
     for i, (init_foot_x, init_foot_y) in enumerate(instance.init_feet):
-        problem.set_initial_value(feet[i](gripping_points[(init_foot_x, init_foot_y)]), True)
+        foot_at, foot_x, foot_y = feet[i]
+        gp = gripping_points[(init_foot_x, init_foot_y)]
+        problem.set_initial_value(foot_at(gp), True)
+
+        problem.set_initial_value(foot_x, init_foot_x)
+        problem.set_initial_value(foot_y, init_foot_y)
+
         problem.set_initial_value(is_free(gripping_points[(init_foot_x, init_foot_y)]), False)
+
+    for (jump_action_name, params), val in jump_actions_allowed.items():
+        jump_gripping_points = [gripping_points[p] for p in params]
+        problem.set_initial_value(jump_actions[jump_action_name](*jump_gripping_points), val)
 
     init_center_x, init_center_y = instance.init_center
     problem.set_initial_value(center_x, init_center_x)

@@ -79,4 +79,4 @@ def test_ladder():
         print(plan)
 
 if __name__ == "__main__":
-    simulate(get_problem(load_instance("5StepsLadder", instances_folder)))
+    simulate(get_problem(load_instance("GPT1", instances_folder)))

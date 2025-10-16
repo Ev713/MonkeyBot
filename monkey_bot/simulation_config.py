@@ -22,6 +22,7 @@ class SimConfig:
     leg_spring_damping:float
     min_extension:float=30
     angle_epsilon:float= 2*math.pi/24
+    gravity:float=98
 
     @property
     def dt(self):

@@ -1,7 +1,9 @@
 import math
 from operator import truediv
+
+import numpy as np
 import pygame
-import imageio.v2 as imageio  # install: pip install imageio
+import imageio as imageio  # install: pip install imageio
 import pygame
 import pymunk
 import pymunk.pygame_util
@@ -71,6 +73,7 @@ class SpringMotor:
 class MonkeyBotSimulator:
     def __init__(self, simulator_config):
 
+        self.simulation_name = "simulation.mp4"
         self.sim_config = simulator_config
         self.t = 0
         self.run=False
@@ -99,9 +102,8 @@ class MonkeyBotSimulator:
     def start_simulation(self, coordinator:InstanceSimulationCoordinator, save_simulation=False):
         pygame.init()
         self.space = pymunk.Space()
-        self.space.gravity = (0, 98)
-        if save_simulation:
-            self.writer = imageio.get_writer("simulation.mp4", fps=60)
+        self.space.gravity = (0, coordinator.config.gravity)
+        self.simulation_name = coordinator.instance.name
         self.window = pygame.display.set_mode((self.sim_config.screen_width, self.sim_config.screen_height))
         self.draw_options = pymunk.pygame_util.DrawOptions(self.window)
         # self.create_boundaries(self.sim_config.screen_width, self.sim_config.screen_height)
@@ -113,8 +115,14 @@ class MonkeyBotSimulator:
         self.run=True
         self.draw()
 
+
     def get_foot_pos(self, foot_id):
         return Vec2d(*self.feet[foot_id][0].position)
+
+    def initiate_saver(self, name=None):
+        if name is None:
+            name = f"{self.simulation_name}.mp4"
+        self.writer = imageio.get_writer(name, fps=self.sim_config.fps, codec='libx264',)
 
     def get_center_pos(self):
         return Vec2d(*self.body.position)
@@ -178,7 +186,7 @@ class MonkeyBotSimulator:
     def _create_robot_body(self, init_center_pos):
         robot_body = pymunk.Body(moment=float("inf"))
         robot_body.position = init_center_pos
-        body_shape = pymunk.Circle(robot_body, 10)
+        body_shape = pymunk.Circle(robot_body, 30)
         body_shape.mass = self.sim_config.body_mass
         body_shape.color = (255, 0, 0, 100)
         body_shape.filter = pymunk.ShapeFilter(group=1)
@@ -354,14 +362,16 @@ class MonkeyBotSimulator:
         for m in self.rotation_motors:
             m.step(self.sim_config.dt)
         for event in pygame.event.get():
-            if event.type == pygame.QUIT or self.gone_wrong():
+            if event.type == pygame.QUIT or self.gone_wrong() or not self.run :
                 self.run=False
                 pygame.quit()
+                self.writer.close()
                 break
 
-        frame = pygame.surfarray.array3d(pygame.display.get_surface())
-        frame = frame.swapaxes(0, 1)  # make it (height, width, 3)
+         # make it (height, width, 3)
         if self.writer:
+            frame = pygame.surfarray.array3d(pygame.display.get_surface())
+            frame = frame.swapaxes(0, 1)
             self.writer.append_data(frame)
         self.t += 1
         self.draw()

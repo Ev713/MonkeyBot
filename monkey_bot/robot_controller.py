@@ -227,7 +227,7 @@ class Mixed(Procedure):
 def parse_action(action):
     action = str(action)
     if '(' not in action or ')' not in action:
-        raise ValueError(f"Invalid action format: {action}")
+        return Action(action, [])
     action_name, args_str = action.split('(', 1)
     args_str = args_str.strip().rstrip(')')
     args = [arg.strip() for arg in args_str.split(',') if arg.strip()]
@@ -356,6 +356,31 @@ class Controller:
 
         self.proc_id = 0
 
+    def calc_robot_mass(self):
+        conf = self.coordinator.config
+        return conf.body_mass+self.coordinator.num_legs*(conf.foot_mass+conf.body_mass)
+
+    def approximate_jump_trajectory(self, start_point, takeoff_vector, number_of_points = 100, frames_per_point=5):
+        g =  self.coordinator.config.gravity
+        mass = self.calc_robot_mass()
+        trajectory = [start_point]
+        x_speed = takeoff_vector[0]
+        y_speed = takeoff_vector[1]
+        curr_point = start_point
+
+        for _ in range(number_of_points):
+            y_speed -= g
+
+
+    def check_jump_is_possible(self, from_1, from_2, p1, p2, p3):
+        from_1 = self.coordinator.grid_to_screen(*from_1)
+        from_2 = self.coordinator.grid_to_screen(*from_2)
+        p1 = self.coordinator.grid_to_screen(*p1)
+        p2 = self.coordinator.grid_to_screen(*p2)
+        p3 = self.coordinator.grid_to_screen(*p3)
+
+
+
     def setup_jump_procedure_sequence(self, current_action:Action, state_info:StateSignal):
         jumping_leg_1_id = int(current_action.args[0])
         jumping_leg_2_id = int(current_action.args[1])
@@ -370,13 +395,13 @@ class Controller:
         ignore_legs = [leg_id for leg_id in range(self.coordinator.num_legs)
                        if leg_id not in (jumping_leg_1_id, jumping_leg_2_id)]
 
-        jumping_vector = Vec2d(0, -500)
+        jumping_vector = Vec2d(0, -900)
         self.procedures = []
         take_off_point = state_info.center_pos
         while (state_info.feet_pos[jumping_leg_1_id] - take_off_point).length < self.coordinator.max_extension \
                 and (state_info.feet_pos[jumping_leg_2_id] - take_off_point).length < self.coordinator.max_extension:
             take_off_point += self.coordinator.config.dt * jumping_vector
-        take_off_point -= self.coordinator.config.dt * jumping_vector
+        take_off_point -= self.coordinator.config.dt * jumping_vector*5
         releasers = []
         for i in ignore_legs:
             releasers.append(ReleaseGrip(i, self.coordinator))
