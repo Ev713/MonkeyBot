@@ -49,11 +49,11 @@ class TrajectoryValidator:
                 catch_window.append(p)
         return catch_window
 
-    def approximate_jump_trajectory(self, start_point, takeoff_vector, number_of_points = 100):
+    def approximate_trajectory(self, start_point, takeoff_vector, number_of_points = 100):
         pass
 
     def setup_achieves_goal(self, start_point, takeoff_vector):
-        trajectory = self.approximate_jump_trajectory(start_point, takeoff_vector)
+        trajectory = self.approximate_trajectory(start_point, takeoff_vector)
         return self.take_off_is_valid(trajectory) and self.catch_window_is_valid(trajectory)
 
     def starting_point_is_valid(self, start_point):
@@ -108,7 +108,7 @@ class TrajectoryValidator:
                 return -100.0  # strong penalty for invalid setups
 
             # --- 3. Evaluate performance ---
-            trajectory = self.approximate_jump_trajectory(start_point, takeoff_vec)
+            trajectory = self.approximate_trajectory(start_point, takeoff_vec)
             score = len(self.get_catch_window(trajectory)*self.check_every_n_frames)
             if score > 0:
                 pass
@@ -132,7 +132,7 @@ class TrajectoryValidator:
         best_start = Vec2d(best_x, best_y)
         best_vec = Vec2d(math.cos(best_angle) * best_speed, math.sin(best_angle) * best_speed)
 
-        best_traj = self.approximate_jump_trajectory(best_start, best_vec)
+        best_traj = self.approximate_trajectory(best_start, best_vec)
         best_score = len(self.get_catch_window(best_traj)*self.check_every_n_frames)
 
         return {
@@ -145,7 +145,7 @@ class TrajectoryValidator:
 
 
 class JumpTrajectoryValidator(TrajectoryValidator):
-    def approximate_jump_trajectory(self, start_point, takeoff_vector, number_of_points = 1000):
+    def approximate_trajectory(self, start_point, takeoff_vector, number_of_points = 1000):
         trajectory = [start_point]
         x_speed = takeoff_vector[0]
         y_speed = takeoff_vector[1]
