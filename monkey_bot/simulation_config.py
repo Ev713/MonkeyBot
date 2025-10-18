@@ -24,6 +24,7 @@ class SimConfig:
     angle_epsilon:float= 2*math.pi/24
     gravity:float=98
 
+
     @property
     def dt(self):
         return 1/self.fps

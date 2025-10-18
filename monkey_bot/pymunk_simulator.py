@@ -365,7 +365,8 @@ class MonkeyBotSimulator:
             if event.type == pygame.QUIT or self.gone_wrong() or not self.run :
                 self.run=False
                 pygame.quit()
-                self.writer.close()
+                if self.writer is not None:
+                    self.writer.close()
                 break
 
          # make it (height, width, 3)
