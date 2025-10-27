@@ -1,6 +1,6 @@
 {
   "name": "GPT1",
-  "leg_extension": 4,
+  "leg_extension": 2,
   "grid_size_x": 10,
   "grid_size_y": 16,
   "gripping_points": [

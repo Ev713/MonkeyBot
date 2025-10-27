@@ -13,9 +13,11 @@ def state_to_dict(state):
     return {str(key): val for key, val in state._values.items()}
 
 def state_to_str(state):
+    state_str = ''
     state_dict = state_to_dict(state)
     for key in state_dict:
-        print(f'{key}: {state_dict[key]}')
+        state_str+=f'{key}: {state_dict[key]}\n'
+    return state_str
 
 def simulate(problem, print_state=False, random_walk=False):
     with SequentialSimulator(problem) as simulator:
@@ -51,6 +53,8 @@ def simulate(problem, print_state=False, random_walk=False):
                 print(f'Applying action resulted in: \n{e}')
                 return
             print(f'Action {action[0].name, action[1]} applied.')
+            if print_state:
+                print(state_to_str(state))
 
             if simulator.is_goal(state):
                 print("Goal reached!")
@@ -68,6 +72,10 @@ def simulate(problem, print_state=False, random_walk=False):
 def get_ladder_prob(steps=5):
     return get_problem(load_instance(f"{steps}StepsLadder", instances_folder))
 
+def get_jump_test_prob():
+    return get_problem(load_instance(f"JumpTest", instances_folder))
+
+
 def test_ladder():
     problem = get_ladder_prob()
     assert problem is not None
@@ -79,4 +87,7 @@ def test_ladder():
         print(plan)
 
 if __name__ == "__main__":
-    simulate(get_problem(load_instance("GPT1", instances_folder)))
+    jump_test_instance = load_instance(f"JumpTest", instances_folder)
+    viable_jumps = [[(1, 1), (3, 1), (-1, -1), (1, 4), (3, 4), (3, 5), (2, 4)]]
+    p = get_problem(jump_test_instance, viable_jumps)
+    simulate(p)
