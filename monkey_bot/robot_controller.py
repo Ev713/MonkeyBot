@@ -139,17 +139,15 @@ class Controller:
             if "move_center" in current_action.name:
                 self.setup_move_center_procedure_sequence(current_action)
             elif "move_foot" in current_action.name:
-                if self.move_foot_is_redundant(state_info, current_action):
-                    self.finish_action()
-                    return sig
-                else:
-                    self.setup_move_foot_procedure_sequence(current_action)
+                self.setup_move_foot_procedure_sequence(current_action)
             elif "tran" in current_action.name:
                 self.setup_jump_procedure_sequence(current_action, state_info)
+            elif "release" in current_action.name:
+                self.setup_release_foot_procedure_sequence(current_action)
             else:
                 raise Exception(f"Unknown action {current_action.name}")
             if self.procedures is not None:
-                logging.debug(f"Starting new procedure {self.procedures[self.proc_id]}")
+                print(f"Starting new procedure {self.procedures[self.proc_id]}")
         p = self.procedures[self.proc_id]
 
         if p.is_finished(state_info):
@@ -158,7 +156,7 @@ class Controller:
                 self.finish_action()
                 self.procedures = None
             if self.procedures is not None:
-                logging.debug(f"Starting new procedure {self.procedures[self.proc_id]}")
+                print(f"Starting new procedure {self.procedures[self.proc_id]}")
         return p.adjust_signal(sig, state_info)
 
     def move_foot_is_redundant(self, state_info:StateSignal, action):
@@ -185,19 +183,20 @@ class Controller:
         edge_transitions = self.get_transition_edges()
         for e in edge_transitions:
             assert e in self.launch_instructions
-        logging.debug(f"Found {len(edge_transitions)} transition edges")
+        print(f"Found {len(edge_transitions)} transition edges")
         plan_path = f"{folder}/{self.coordinator.instance.name}.txt"
 
         if os.path.exists(plan_path):
             self.read_plan(plan_path)
-            logging.debug(f"Loaded existing plan from {plan_path}")
+            print(f"Loaded existing plan from {plan_path}")
         else:
             self.create_plan(plan_path=plan_path)
-            logging.debug(f"Created and saved new plan to {plan_path}")
+            print(f"Created and saved new plan to {plan_path}")
 
     def setup_move_center_procedure_sequence(self, current_action):
-        goal_point = Vec2d(*self.coordinator.grid_to_screen(*tuple(Vec2d(*self._last_grid_center_pos)
-                                        +Vec2d(*self.get_center_grid_delta(current_action.name)))))
+        next_grid_center_point = tuple(Vec2d(*self._last_grid_center_pos)
+                                        +Vec2d(*self.get_center_grid_delta(current_action.name)))
+        goal_point = Vec2d(*self.coordinator.grid_to_screen(*next_grid_center_point))
         self.procedures = [MoveCenter(goal_point, self.coordinator)]
         self.proc_id = 0
 
@@ -258,7 +257,7 @@ class Controller:
 
     def get_all_catchable_gripping_points(self, center_point):
         return [gp for gp in self.coordinator.instance.gripping_points if
-                0<math.hypot(center_point[0] - gp[0], center_point[1] - gp[1])<self.coordinator.instance.max_extension]
+                0 < math.hypot(center_point[0] - gp[0], center_point[1] - gp[1]) < self.coordinator.instance.max_extension]
 
     def hash_jump_params(self, from_1, from_2, center):
         return tuple((round(k[0]), round(k[1])) for k in [from_1, from_2,center])
@@ -356,6 +355,17 @@ class Controller:
         move_center = MoveCenter(self.coordinator.grid_to_screen(c_x, c_y), self.coordinator,)
         self.procedures.append(move_center)
 
+        self.proc_id = 0
+
+    def setup_release_foot_procedure_sequence(self, current_action):
+        limb_id = int(current_action.name.split('_')[-1])
+        self.procedures = []
+
+        releaser = ReleaseGrip(limb_id, self.coordinator)
+
+        self.procedures.append(releaser)
+        retractor = AdjustLength(limb_id, self.coordinator.min_extension, self.coordinator)
+        self.procedures.append(retractor)
         self.proc_id = 0
 
 

@@ -72,6 +72,8 @@ def get_problem(instance: MonkeyBotProblemInstance, viable_jumps=None):
     leg_extension = instance.max_extension
     grid_size_x = instance.grid_size_x
     grid_size_y = instance.grid_size_y
+    detached_pos = (-instance.max_extension, -instance.max_extension)
+    non_deterministic_pos = (-2*instance.max_extension, -2*instance.max_extension)
 
     problem = Problem()
 
@@ -91,43 +93,63 @@ def get_problem(instance: MonkeyBotProblemInstance, viable_jumps=None):
     foot_3_x = Fluent(f"foot_3_x", IntType())
     foot_3_y = Fluent(f"foot_3_y", IntType())
     feet_pos = ((foot_1_x, foot_1_y), (foot_2_x, foot_2_y), (foot_3_x, foot_3_y))
-    
-    
+
+    is_detached =[]
+    is_attached = []
+    for foot_x, foot_y in feet_pos:
+        is_detached.append(And(Equals(foot_x, detached_pos[0]), Equals(foot_y, detached_pos[1])))
+        is_attached.append(And(GE(foot_x, 0), GE(foot_y, 0)))
+    all_attached = And(And(is_attached[0], is_attached[1]) ,is_attached[2])
+
     for i in range(3):
+        other_1, other_2 = [x for x in range(3) if x != i]
+
         move_foot = InstantaneousAction(f"move_foot_{i}", p_to=GrippingPoint)
 
         p_to = move_foot.parameter('p_to')
         to_x = gripping_point_x(p_to)
         to_y = gripping_point_y(p_to)
 
-        move_foot.add_precondition(Not(And(Equals(center_x, feet_pos[i][0]), Equals(center_y, feet_pos[i][1]))))
-        move_foot.add_precondition(dist_prec(center_x, center_y, gripping_point_x(p_to), gripping_point_y(p_to), leg_extension))
+        move_foot.add_precondition(Not(And(Equals(center_x, to_x), Equals(center_y, to_y))))
+        move_foot.add_precondition(dist_prec(center_x, center_y, to_x, to_y, leg_extension))
 
         for j in range(3):
             move_foot.add_precondition(Not(And(Equals(feet_pos[j][0], to_x), Equals(feet_pos[j][1], to_y))))
 
-        new_feet_x = [f[0] for f in feet_pos]
-        new_feet_y = [f[1] for f in feet_pos]
-        new_feet_x[i] = to_x
-        new_feet_y[i] = to_y
-
-        #move_foot.add_precondition(leg_order_precondition(center_x, center_y, new_feet_x, new_feet_y))
+        move_foot.add_precondition(And(Not(is_detached[other_1]), Not(is_detached[other_2])))
 
         move_foot.add_effect(feet_pos[i][0], to_x)
         move_foot.add_effect(feet_pos[i][1], to_y)
         problem.add_action(move_foot)
 
+        release_foot = InstantaneousAction(f'release_foot_{i}')
+        release_foot.add_precondition(is_attached[other_1])
+        release_foot.add_precondition(is_attached[other_2])
+        release_foot.add_effect(feet_pos[i][0], detached_pos[0])
+        release_foot.add_effect(feet_pos[i][1], detached_pos[1])
+        problem.add_action(release_foot)
+
+
     for direc in ["up", "down", "left", "right"]:
         move_center = InstantaneousAction(f"move_center_{direc}")
-        move_center.add_precondition(
-            leg_order_precondition(center_x, center_y, [foot_x for foot_x, _ in feet_pos], [foot_y for _, foot_y in feet_pos]))
+        #move_center.add_precondition(
+        #    leg_order_precondition(center_x, center_y, [foot_x for foot_x, _ in feet_pos], [foot_y for _, foot_y in feet_pos]))
 
         mod = {"up": (0, 1), "down": (0, -1), "left": (-1, 0), "right": (1, 0)}[direc]
-        for foot_x, foot_y in feet_pos:
 
-            move_center.add_precondition(dist_prec(foot_x, foot_y,
-                                                   center_x + mod[0], center_y + mod[1], leg_extension))
-            move_center.add_precondition((Not(And(Equals(center_x + mod[0], foot_x), Equals(center_y + mod[1], foot_y)))))
+        close_enough = []
+        for foot_x, foot_y in feet_pos:
+            close_enough.append(dist_prec(foot_x, foot_y, center_x + mod[0], center_y + mod[1], leg_extension))
+
+        grip_prec = all_attached
+        for i, (foot_x, foot_y) in enumerate(feet_pos):
+            other_1, other_2 = [x for x in range(3) if x != i]
+            grip_prec = Or(grip_prec, And(And(is_detached[i], is_attached[other_1]), is_attached[other_2]))
+            move_center.add_precondition(Or(close_enough[i], is_detached[i]))
+            move_center.add_precondition(
+                (Not(And(Equals(center_x + mod[0], foot_x), Equals(center_y + mod[1], foot_y)))))
+        move_center.add_precondition(grip_prec)
+
         if direc == "up":
             move_center.add_precondition(LT(center_y, grid_size_y))
             move_center.add_effect(center_y, center_y+1)
@@ -214,15 +236,15 @@ def get_problem(instance: MonkeyBotProblemInstance, viable_jumps=None):
         use_tran.add_effect(center_x, new_center_x(tran))
         use_tran.add_effect(center_y, new_center_y(tran))
 
-        use_tran.add_effect(foot_1_x, -instance.max_extension)
-        use_tran.add_effect(foot_2_x, -instance.max_extension)
-        use_tran.add_effect(foot_3_x, -instance.max_extension)
-        use_tran.add_effect(foot_1_y, -instance.max_extension)
-        use_tran.add_effect(foot_2_y, -instance.max_extension)
-        use_tran.add_effect(foot_3_y, -instance.max_extension)
+        use_tran.add_effect(foot_1_x, non_deterministic_pos[0])
+        use_tran.add_effect(foot_2_x, non_deterministic_pos[0])
+        use_tran.add_effect(foot_3_x, non_deterministic_pos[0])
+        use_tran.add_effect(foot_1_y, non_deterministic_pos[1])
+        use_tran.add_effect(foot_2_y, non_deterministic_pos[1])
+        use_tran.add_effect(foot_3_y, non_deterministic_pos[1])
         problem.add_action(use_tran)
-
         for (init1_x, init1_y),(init2_x, init2_y), (c_x, c_y) in viable_jumps:
+
             tran = Object(f"tran_{init1_x}_{init1_y}_{init2_x}_{init2_y}_{c_x}_{c_y}", TransitionLink)
             problem.add_object(tran)
 

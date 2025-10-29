@@ -4,8 +4,8 @@ from pathlib import Path
 from unified_planning.shortcuts import OneshotPlanner, SequentialSimulator
 
 from monkey_bot import upf_solver
-from monkey_bot.monkey_bot_problem_instance import load_instance
-from monkey_bot.upf_solver import get_problem
+from monkey_bot.monkey_bot_problem_instance import load_instance, increase_scale
+from monkey_bot.upf_solver import get_problem, solve_problem
 
 instances_folder = "../instances"
 
@@ -87,7 +87,16 @@ def test_ladder():
         print(plan)
 
 if __name__ == "__main__":
-    jump_test_instance = load_instance(f"JumpTest", instances_folder)
-    viable_jumps = [[(1, 1), (3, 1), (-1, -1), (1, 4), (3, 4), (3, 5), (2, 4)]]
-    p = get_problem(jump_test_instance, viable_jumps)
-    simulate(p)
+    instance = load_instance(f"Random", instances_folder)
+    instance = increase_scale(instance, 2)
+    viable_jumps = [((8, 10), (10, 8), (12, 16)), ((8, 10), (10, 8), (18, 15)), ((8, 10), (10, 8), (16, 16)), ((8, 10), (10, 8), (17, 16)), ((8, 10), (10, 8), (19, 16)), ((8, 10), (10, 8), (19, 15)), ((8, 10), (10, 8), (12, 17)), ((8, 10), (10, 8), (12, 18)), ((8, 10), (10, 8), (19, 18)), ((8, 10), (10, 8), (18, 16)), ((8, 10), (10, 8), (20, 18)), ((8, 10), (10, 8), (12, 19)), ((8, 10), (10, 8), (20, 19)), ((10, 8), (12, 8), (10, 17)), ((10, 10), (12, 10), (10, 17))]
+
+    problem = get_problem(instance, viable_jumps)
+    simulate(problem)
+    with OneshotPlanner(name='enhsp') as planner:
+        result = planner.solve(problem)
+        print(result)
+        plan = result.plan
+        assert plan is not None
+        print("%s returned:" % planner.name)
+        print(plan)

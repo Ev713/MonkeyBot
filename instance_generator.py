@@ -1,41 +1,41 @@
+import json
+import os
 import random
 
-import monkey_bot.monkey_bot_problem_instance
-from monkey_bot import upf_solver
+grid_size_x = 10
+grid_size_y = 10
 
-"""name, 
-            max_extension,
-            grid_size_x,
-            grid_size_y,
-            gripping_points, 
-            goal_point,
-            init_center,
-            init_feet"""
+goal_point = [grid_size_x-2, grid_size_y-2]
+init_center = [2, 2]
 
-class InstanceGenerator:
-    def __init__(self):
-        name = f"i_{random.randint(1, 999999)}"
-        self.instance = monkey_bot.monkey_bot_problem_instance.MonkeyBotProblemInstance(
-            None, None, None, None, None, None, None, None)
+init_feet = [[1, 1], [3, 1], [1, 3]]
 
-    def set_basic_parameters(self, max_x, max_y, max_extension, name=None):
-        self.instance.grid_size_x = max_x
-        self.instance.grid_size_y = max_y
-        self.instance.max_extension = max_extension
-        if name is not None:
-            self.instance.name = name
+name = 'Random'
+instance = {
+  "name": name,
+  "leg_extension": 3,
+  "grid_size_x": grid_size_x,
+  "grid_size_y": grid_size_y,
+  "gripping_points": init_feet.copy(),
+  "goal_point": goal_point,
+  "init_center": init_center,
+  "init_feet": init_feet
+}
 
-    def generate_random(self, max_x, max_y, name=None, density=0.5):
-        init_center = random.randint(0, max_x), random.randint(0, max_y)
-        goal = random.randint(1, max_x), random.randint(1, max_y)
+all_points = [[x+1, y+1] for x in range(grid_size_x) for y in range(grid_size_y) if [x+1, y+1] not in init_feet and x%2==0 and y %2==0]
 
+new_points = all_points
+print(f"{len(new_points)} possible grip points")
+new_points = random.sample(all_points, 16)
 
-        for i in range(self.instance.grid_size_x):
-            for j in range(self.instance.grid_size_y):
-                if random.random() < density:
-                    self.instance.gripping_points.append((i+1, j+1))
-
-    def check_is_doable(self, sim_runner):
-        return upf_solver.get_plan(self.instance) is not None
+instance['gripping_points'] += new_points
 
 
+out_dir = "instances"
+os.makedirs(out_dir, exist_ok=True)
+file_path = os.path.join(out_dir, f"{name}.json")
+
+with open(file_path, "w") as f:
+    json.dump(instance, f, indent=2)
+
+print(f"✅ Instance saved to {file_path}")

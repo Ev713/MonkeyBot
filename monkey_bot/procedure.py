@@ -36,7 +36,6 @@ class AdjustLength(Procedure):
     def curr_length(self, state_info):
         return  (state_info.center_pos - state_info.feet_pos[self.limb_id]).length
 
-
     def adjust_signal(self, signal: ControlSignal, state_info):
         sign = 1 if self.goal_extension - self.curr_length(state_info) > 0 else -1
         signal.extension[self.limb_id] = signal.extension[self.limb_id] + sign*self.extension_speed
@@ -229,7 +228,9 @@ class MoveCenter(Procedure):
                                  for limb_id in range(self.num_legs)]
         self.angle_adjusters = [AdjustAngle(limb_id, None, coordinator)
                                  for limb_id in range(self.num_legs)]
-
+        self._prev_center_pos = None
+        self.powerup = 1
+        self.lag_tolerance_threshold = 0.1
 
     def _calc_next_point(self, state_info:StateSignal):
         move_vec = (self.goal_point - state_info.center_pos)
@@ -245,43 +246,41 @@ class MoveCenter(Procedure):
         return [a.limb_id for a in self.length_adjusters if a.limb_id not in self.ignore_legs]
 
     def adjust_signal(self, signal: ControlSignal, state_info):
+        center_pos = state_info.center_pos
         next_frame_center = self._calc_next_point(state_info)
-        active_legs = self.active_legs()
+        next_move_vector = next_frame_center - center_pos
+        active_legs = [i for i, a in enumerate(state_info.active_grips) if a]
 
-
-        for a in self.length_adjusters:
-            limb_id = a.limb_id
-
-            foot_pos = state_info.feet_pos[limb_id]
-            next_foot_vec = foot_pos - next_frame_center
-            curr_foot_vec = foot_pos - state_info.center_pos
-            self.get_adjuster(limb_id).goal_extension = next_foot_vec.length
-            self.get_adjuster(limb_id).extension_speed = abs(next_foot_vec.length - curr_foot_vec.length)/self.dt
-            signal.rotation[limb_id] = None
-
-        if len(active_legs) == 2:
-            p1 = state_info.feet_pos[active_legs[0]]
-            p2 = state_info.feet_pos[active_legs[1]]
-            seg_vec = p2 - p1
-
-            seg_len_sq = seg_vec.dot(seg_vec)
-            if seg_len_sq == 0:
-                # Degenerate case: x1 == x2
-                distance = (next_frame_center - p1).length
+        if self._prev_center_pos:
+            if (center_pos - self._prev_center_pos).length < self.move_center_speed*self.lag_tolerance_threshold:
+                self.powerup *= 1.001
             else:
-                # Project p onto the line (parameterized by t)
-                t = (next_frame_center - p1).dot(seg_vec) / seg_len_sq
-                projection = p1 + t * seg_vec
-                distance = (next_frame_center - projection).length
-            if distance < self.epsilon*5:
-                for a in self.angle_adjusters:
-                    if a.limb_id in active_legs:
-                        a.target_point=state_info.center_pos+(state_info.feet_pos[a.limb_id]- self.goal_point)
-                        signal = a.adjust_signal(signal, state_info)
+                self.powerup = 1
+        self._prev_center_pos = center_pos
+
+        aim_center = center_pos + next_move_vector * self.powerup
+
+        for length_adj, angle_adj in zip(self.length_adjusters, self.angle_adjusters):
+            limb_id = length_adj.limb_id
+            foot_pos = state_info.feet_pos[limb_id]
+            next_foot_vec = foot_pos - aim_center
+            curr_foot_vec = foot_pos - state_info.center_pos
+            length_adj.goal_extension = max(self.min_extension, next_foot_vec.length)
+            length_adj.extension_speed = abs(next_foot_vec.length - curr_foot_vec.length) / self.dt
+
+            angle_diff = next_foot_vec.get_angle_between(curr_foot_vec)
+            if limb_id in active_legs:
+                angle_adj.target_point = center_pos + next_foot_vec
+            else:
+                angle_adj.target_point = foot_pos
+            angle_adj.extension_speed = abs(angle_diff) / self.dt
 
         for a in self.length_adjusters:
             if a.limb_id in active_legs:
                 signal = a.adjust_signal(signal, state_info)
+        for a in self.angle_adjusters:
+            signal = a.adjust_signal(signal, state_info)
+
         return signal
 
 

@@ -20,18 +20,17 @@ sim_config = SimConfig(
 
 robot_config = RobotConfig(
     epsilon=0.1,
-    extension_speed=1,
-    rotation_speed=1,
-    move_center_speed=1,
+    extension_speed=4,
+    rotation_speed=4,
+    move_center_speed=4,
     body_mass=5,
-    body_radius=0.5,
+    body_radius=0.4,
     foot_mass=0.2,
     leg_mass=0.2,
-    leg_spring_stiffness=400,
+    leg_spring_stiffness=500,
     leg_spring_damping=1.5,
-    min_extension=0.4,
+    min_extension=0.1,
     max_takeoff_speed=20,
-    #max_extension = 2
 )
 
 def test_simple_climbing():
@@ -48,9 +47,7 @@ def test_jump_procedure_sequence():
     sim_runner.execute_simulation(save=save_simulation)
 
 def test_complex_actions_problem():
-    instance = load_instance("Mixed", INSTANCES_FOLDER)
-    increase_scale(instance, 2)
-    instance.max_extension = 3
+    instance = load_instance("Random", INSTANCES_FOLDER)
     sim_runner = SimRunner(instance, sim_config=sim_config, robot_config=robot_config)
     sim_runner.log_rotation_motors = [0]
     sim_runner.execute_simulation(save=True)

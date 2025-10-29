@@ -42,10 +42,11 @@ class InstanceSimulationCoordinator:
         self.sim_config = sim_config
         self.robot_config = robot_config
 
+    @property
     def cell_size(self):
         total_grid_w = self.instance.grid_size_x + 2  # one margin cell per side
         total_grid_h = self.instance.grid_size_y + 2
-        return min(self.sim_config.screen_width / total_grid_w, self.sim_config.screen_height / total_grid_h)
+        return 50#min(self.sim_config.screen_width / total_grid_w, self.sim_config.screen_height / total_grid_h)
 
     def grid_to_screen(self, x, y):
         """
@@ -54,7 +55,7 @@ class InstanceSimulationCoordinator:
         The grid is centered on the screen and scaled so that there is
         at least one grid cell margin on all sides.
         """
-        cell_size = self.cell_size()
+        cell_size = self.cell_size
 
         center_x, center_y = self.sim_config.screen_width / 2, self.sim_config.screen_height / 2
         screen_x = center_x + cell_size * (x - self.instance.grid_size_x / 2)
@@ -86,7 +87,7 @@ class InstanceSimulationCoordinator:
 
     @property
     def max_extension(self):
-        return self.instance.max_extension * self.cell_size() * 1.1
+        return self.instance.max_extension * self.cell_size * 1.1
 
     @property
     def body_mass(self):
@@ -102,35 +103,35 @@ class InstanceSimulationCoordinator:
 
     @property
     def gravity(self):
-        return self.sim_config.gravity*self.cell_size()
+        return self.sim_config.gravity* self.cell_size
 
     @property
     def epsilon(self):
-        return self.robot_config.epsilon*self.cell_size()
+        return self.robot_config.epsilon* self.cell_size
 
     @property
     def leg_thickness(self):
-        return self.robot_config.leg_thickness*self.cell_size()
+        return self.robot_config.leg_thickness* self.cell_size
 
     @property
     def min_extension(self):
-        return self.robot_config.min_extension * self.cell_size()
+        return self.robot_config.min_extension * self.cell_size
 
     @property
     def foot_radius(self):
-        return self.robot_config.foot_radius*self.cell_size()
+        return self.robot_config.foot_radius*self.cell_size
 
     @property
     def body_radius(self):
-        return self.robot_config.body_radius*self.cell_size()
+        return self.robot_config.body_radius*self.cell_size
 
     @property
     def extension_speed(self):
-        return self.robot_config.extension_speed*self.cell_size()
+        return self.robot_config.extension_speed*self.cell_size
 
     @property
     def move_center_speed(self):
-        return self.robot_config.move_center_speed * self.cell_size()
+        return self.robot_config.move_center_speed * self.cell_size
 
     @property
     def rotation_speed(self):
@@ -146,12 +147,11 @@ class InstanceSimulationCoordinator:
 
     @property
     def stiffness(self):
-        return self.robot_config.leg_spring_stiffness * self.cell_size()
-
+        return self.robot_config.leg_spring_stiffness * self.cell_size
     @property
     def damping(self):
-        return self.robot_config.leg_spring_damping * self.cell_size()
+        return self.robot_config.leg_spring_damping * self.cell_size
 
     @property
     def max_jump_speed(self):
-        return self.robot_config.max_takeoff_speed * self.cell_size()
+        return self.robot_config.max_takeoff_speed * self.cell_size
