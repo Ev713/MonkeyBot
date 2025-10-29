@@ -229,13 +229,17 @@ class Controller:
             if center is None or grid_distance(init1, init2) > 2 * max_ext:
                 continue
 
+
+            #Proning#1
             if (grid_distance(center, init1) <= max_ext and
                     grid_distance(center, init2) <= max_ext):
                 continue
 
+            #Proning#2
             if all(reverse_cliques[p] == reverse_cliques[init1] for p in [init2, p1, p2, p3]):
                 continue
 
+            #Proning#3
             init1_screen = self.coordinator.grid_to_screen(*init1)
             init2_screen = self.coordinator.grid_to_screen(*init2)
             p1_screen = self.coordinator.grid_to_screen(*p1)
