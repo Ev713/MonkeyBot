@@ -214,13 +214,23 @@ class Controller:
         self.proc_id = 0
 
     def get_transition_edges(self):
+        # Default behavior: use all prunings
+        return self._get_transition_edges_internal(use_p1=True, use_p2=True, use_p3=True)
+
+    def _get_transition_edges_internal(self, use_p1: bool = True, use_p2: bool = True, use_p3: bool = True):
+        # Reset launch instructions for a clean run
+        self.launch_instructions = {}
         edge_transitions = []
         seen_configs = set()
         cliques = self.find_cliques()
-        reverse_cliques = {gp:i for gp in self.coordinator.instance.gripping_points for i in cliques if gp in cliques[i]}
+        reverse_cliques = {gp: i for gp in self.coordinator.instance.gripping_points for i in cliques if
+                           gp in cliques[i]}
+
+        # The core loop iterates over all combinations of 5 gripping points.
         for init1, init2, p1, p2, p3 in itertools.combinations(self.coordinator.instance.gripping_points, 5):
 
-            if (init1 == p1 and init2 == p2 or ()) or init1 == init2 or p1 == p2 or p2 == p3 or p1==p3:
+            # --- Trivial Prunings (Mandatory for physical/geometric validity) ---
+            if (init1 == p1 and init2 == p2 or ()) or init1 == init2 or p1 == p2 or p2 == p3 or p1 == p3:
                 continue
 
             max_ext = self.coordinator.instance.max_extension
@@ -228,35 +238,44 @@ class Controller:
 
             if center is None or grid_distance(init1, init2) > 2 * max_ext:
                 continue
-            #end of trivial prunings
+            # -------------------------------------------------------------------
 
-            #Pruning#1
-            if (grid_distance(center, init1) <= max_ext and
-                    grid_distance(center, init2) <= max_ext):
-                continue
+            # Pruning #1: Trivial Jump Elimination
+            if use_p1:
+                if (grid_distance(center, init1) <= max_ext and
+                        grid_distance(center, init2) <= max_ext):
+                    continue
 
-            #Pruning#2
-            if all(reverse_cliques[p] == reverse_cliques[init1] for p in [init2, p1, p2, p3]):
-                continue
+            # Pruning #2: Clique/Component Check
+            if use_p2:
+                if all(reverse_cliques[p] == reverse_cliques[init1] for p in [init2, p1, p2, p3]):
+                    continue
 
-            #Pruning#3
+            # Pruning #3: Duplicate Configuration Check (avoids expensive geometric check)
+            config_key = None
+            if use_p3:
+                reachable = frozenset(self.get_all_catchable_gripping_points(center))
+                config_key = (init1, init2, reachable)
+                if config_key in seen_configs:
+                    continue
+
+                    # --- Expensive Geometric/Physical Check ---
             init1_screen = self.coordinator.grid_to_screen(*init1)
             init2_screen = self.coordinator.grid_to_screen(*init2)
             p1_screen = self.coordinator.grid_to_screen(*p1)
             p2_screen = self.coordinator.grid_to_screen(*p2)
             p3_screen = self.coordinator.grid_to_screen(*p3)
 
-            reachable = frozenset(self.get_all_catchable_gripping_points(center))
-            config_key = (init1, init2, reachable)
-            if config_key in seen_configs:
-                continue
-
             key = self.hash_jump_params(init1, init2, center)
             launch = self.check_jump_is_possible(init1_screen, init2_screen, p1_screen, p2_screen, p3_screen)
+
             if launch:
-                seen_configs.add(config_key)
-                self.launch_instructions[key]=launch
+                if use_p3:
+                    seen_configs.add(config_key)  # Record the new unique configuration
+
+                self.launch_instructions[key] = launch
                 edge_transitions.append((init1, init2, center))
+        edge_transitions = set(edge_transitions)
         return edge_transitions
 
     def get_all_catchable_gripping_points(self, center_point):
