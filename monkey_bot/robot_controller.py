@@ -25,7 +25,7 @@ def grid_distance(p1:Tuple[int, int], p2:Tuple[int, int]):
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
 
 class Controller:
-    def __init__(self, coordinator:InstanceSimulationCoordinator):
+    def __init__(self, coordinator:InstanceSimulationCoordinator,enable_transitional_links=True):
         self.finished_plan = False
         self.plan = []
         self.coordinator = coordinator
@@ -40,6 +40,7 @@ class Controller:
         self.proc_id = 0
 
         self.launch_instructions = {}
+        self.enable_transitional_links = enable_transitional_links
 
 
     @property
@@ -86,10 +87,12 @@ class Controller:
         return self.plan[self.actions_finished]
 
     def create_plan(self, plan_path=None):
-        edge_transitions = self.get_transition_edges()
-        for e in edge_transitions:
-            assert e in self.launch_instructions
-        logging.debug(f"Found {len(edge_transitions):} transition edges")
+        edge_transitions = []
+        if self.enable_transitional_links:
+            edge_transitions = self.get_transition_edges()
+            for e in edge_transitions:
+                assert e in self.launch_instructions
+            logging.debug(f"Found {len(edge_transitions):} transition edges")
         problem = get_problem(self.coordinator.instance, edge_transitions)
         #simulate(problem, )
         start= time.perf_counter()
@@ -127,6 +130,8 @@ class Controller:
                       [0 for _ in range(self.coordinator.num_legs)])
 
     def get_sig(self, state_info:StateSignal):
+        if self.actions_finished == 0 and not self.procedures:
+            print(f"Starting action {self.plan[self.actions_finished]}")
         sig = self.get_empty_sig()
         if self.actions_finished == len(self.plan):
             return sig
@@ -166,11 +171,9 @@ class Controller:
         return (goal_point - foot_pos).length < self.coordinator.epsilon and state_info.active_grips[limb_id]
 
     def finish_action(self):
-        self._start_last_action_time = 0
-        #print(f"Finished Action: {self.plan[self.actions_finished]}")
+        print(f"Finished Action: {self.plan[self.actions_finished]}")
         self.actions_finished+=1
         if len(self.plan)>self.actions_finished:
-            #pass
             print(f"Starting action {self.plan[self.actions_finished]}")
         else:
             self.finished_plan =True
@@ -180,10 +183,12 @@ class Controller:
         self.plan = [parse_action(l) for l in open(file_path)]
 
     def create_or_read_plan(self, folder):
-        edge_transitions = self.get_transition_edges()
-        for e in edge_transitions:
+        transition_links = []
+        if self.enable_transitional_links:
+            transition_links = self.get_transition_edges()
+        for e in transition_links:
             assert e in self.launch_instructions
-        print(f"Found {len(edge_transitions)} transition edges")
+        print(f"Found {len(transition_links)} transition links")
         plan_path = f"{folder}/{self.coordinator.instance.name}.txt"
 
         if os.path.exists(plan_path):
@@ -370,19 +375,23 @@ class Controller:
 
 
 class ManualController(Controller):
-    def __init__(self, coordinator):
-        Controller.__init__(self, coordinator)
+    def __init__(self, coordinator, enable_transitional_links=True):
+        Controller.__init__(self, coordinator, enable_transitional_links=enable_transitional_links)
         self.actions = None
-        edge_transitions = self.get_transition_edges()
-        for e in edge_transitions:
-            assert e in self.launch_instructions
-        logging.debug(f"Found {len(edge_transitions):} transition edges")
-        self.problem = get_problem(self.coordinator.instance, edge_transitions)
+        transition_links =[]
+        if enable_transitional_links:
+            transition_links = self.get_transition_edges()
+            for e in transition_links:
+                assert e in self.launch_instructions
+        logging.debug(f"Found {len(transition_links)}: transition edges")
+        self.problem = get_problem(self.coordinator.instance, transition_links)
         self.upf_simulator = SequentialSimulator(self.problem)
         self.state = self.upf_simulator.get_initial_state()
         self.t = 0
         self.parsed_actions = []
         self.actions_finished = None
+
+        self.center_position = coordinator.instance.init_center
 
     def check_possible_actions(self):
         self.actions = list(self.upf_simulator.get_applicable_actions(self.state))
@@ -433,17 +442,24 @@ class ManualController(Controller):
         choice = self.ask_action_from_user()
         if choice is None:
             return None
-        action = self.actions[choice]
+        action =self.actions[choice]
         parsed_action = self.parsed_actions[int(choice)]
+        self.update_last_center(parsed_action)
         try:
             self.state = self.upf_simulator.apply(self.state, action[0], action[1])
         except Exception as e:
             raise Exception(f'Applying action resulted in: \n{e}')
         return parsed_action
 
+    def update_last_center(self, action: Action):
+        if "move_center" not in action.name:
+            return
+        delta = self.get_center_grid_delta(action.name)
+        self.center_position = self.center_position[0] + delta[0], self.center_position[1] + delta[1]
+
     @property
     def _last_grid_center_pos(self):
-        raise NotImplementedError
+        return self.center_position
 
     def finish_action(self):
         return

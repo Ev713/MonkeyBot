@@ -24,11 +24,11 @@ class SimRunner:
         for i in self.log_rotation_motors:
             self.log_rotation_motor(i)
 
-    def start_controller(self, manual=False):
+    def start_controller(self, manual=False, enable_transitional_links=True):
         if manual:
-            self.controller = ManualController(self.inst_sim_coordiator)
+            self.controller = ManualController(self.inst_sim_coordiator, enable_transitional_links=enable_transitional_links)
         else:
-            self.controller = Controller(self.inst_sim_coordiator)
+            self.controller = Controller(self.inst_sim_coordiator, enable_transitional_links=enable_transitional_links)
 
     def run_step(self):
         state = self.simulator.get_state()
@@ -44,14 +44,16 @@ class SimRunner:
     def log_rotation_motor(self, i):
         self.simulator.rotation_motors[i].enable_log()
 
-    def execute_manual_simulation(self, ):
-        self.start_controller(manual=True)
+    def execute_manual_simulation(self, save=False, enable_transitional_links=True):
+        self.start_controller(manual=True, enable_transitional_links=enable_transitional_links)
         self.start_simulator()
+        if save:
+            self.simulator.initiate_saver()
         while self.simulator.run:
             self.run_step()
 
-    def execute_simulation(self, plans_folder="plans", save=False):
-        self.start_controller()
+    def execute_simulation(self, plans_folder="plans", enable_transitional_links=True, save=False):
+        self.start_controller(enable_transitional_links=enable_transitional_links)
         self.controller.create_or_read_plan(folder=plans_folder)
         self.start_simulator()
         if save:

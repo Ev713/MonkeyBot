@@ -125,6 +125,7 @@ def get_problem(instance: MonkeyBotProblemInstance, viable_jumps=None):
         release_foot = InstantaneousAction(f'release_foot_{i}')
         release_foot.add_precondition(is_attached[other_1])
         release_foot.add_precondition(is_attached[other_2])
+        release_foot.add_precondition(is_attached[i])
         release_foot.add_effect(feet_pos[i][0], detached_pos[0])
         release_foot.add_effect(feet_pos[i][1], detached_pos[1])
         problem.add_action(release_foot)

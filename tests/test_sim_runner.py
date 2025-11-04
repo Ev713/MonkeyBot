@@ -47,10 +47,10 @@ def test_jump_procedure_sequence():
     sim_runner.execute_simulation(save=save_simulation)
 
 def test_complex_actions_problem():
-    instance = load_instance("Random", INSTANCES_FOLDER)
+    instance = load_instance("Random1", INSTANCES_FOLDER)
     sim_runner = SimRunner(instance, sim_config=sim_config, robot_config=robot_config)
     sim_runner.log_rotation_motors = [0]
-    sim_runner.execute_simulation(save=True)
+    sim_runner.execute_manual_simulation(save=True, enable_transitional_links=False)
 
 if __name__ == "__main__":
     #test_jump_procedure_sequence()
