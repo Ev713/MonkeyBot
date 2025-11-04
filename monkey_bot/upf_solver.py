@@ -259,12 +259,14 @@ def get_problem(instance: MonkeyBotProblemInstance, viable_jumps=None):
 
     return problem
 
+# In monkey_bot/upf_solver.py
+from unified_planning.shortcuts import OneshotPlanner
+
 def solve_problem(problem):
+    # Instead of returning just the plan, return the full result object
     with OneshotPlanner(name='enhsp') as planner:
         result = planner.solve(problem)
-        plan = result.plan
-        return plan
-
+        return result
 def solve_instance(instance: MonkeyBotProblemInstance):
     return solve_problem(get_problem(instance))
 
