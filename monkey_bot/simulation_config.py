@@ -12,6 +12,7 @@ class SimConfig:
     screen_width:int
     fps:int
     gravity:float=0.5
+    cell_size: float = 50
 
     @property
     def dt(self):
@@ -34,6 +35,10 @@ class RobotConfig:
     leg_thickness:float = 0.01
     body_radius:float = 0.1
     max_takeoff_speed:float = 10
+    prune_short_jumps:bool=True,
+    prune_in_clique_jumps:bool=True,
+    prune_similar_jumps:bool=True,
+
 
 
 class InstanceSimulationCoordinator:
@@ -41,12 +46,6 @@ class InstanceSimulationCoordinator:
         self.instance = instance
         self.sim_config = sim_config
         self.robot_config = robot_config
-
-    @property
-    def cell_size(self):
-        total_grid_w = self.instance.grid_size_x + 2  # one margin cell per side
-        total_grid_h = self.instance.grid_size_y + 2
-        return 50#min(self.sim_config.screen_width / total_grid_w, self.sim_config.screen_height / total_grid_h)
 
     def grid_to_screen(self, x, y):
         """
@@ -62,6 +61,10 @@ class InstanceSimulationCoordinator:
         screen_y = center_y - cell_size * (y - self.instance.grid_size_y / 2)
 
         return Vec2d(screen_x, screen_y)
+
+    @property
+    def cell_size(self):
+        return self.sim_config.cell_size
 
     def gp_name_to_screen_point(self, gp_name):
         gp_x = int(gp_name.split('_')[1])

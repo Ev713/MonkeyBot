@@ -140,14 +140,18 @@ class DynamicCatch(Procedure):
             self.grabbers.append(grabber)
             self.trackers.append(tracker)
 
-    def get_closest_point(self, state_info:StateSignal):
+    def get_closest_free_point(self, state_info:StateSignal):
         center = state_info.center_pos
         closest_point = None
         for p in self.target_points:
-            if closest_point is None or (p-center).length < (closest_point - center).length:
+            if closest_point is None or (p-center).length < (closest_point - center).length and self.is_free(state_info, p):
                 closest_point = p
+        if closest_point is None:
+            return center
         return closest_point
 
+    def is_free(self, state_info, p):
+        return all((foot - p).length>self.epsilon for foot in state_info.feet_pos)
 
     def adjust_signal(self, signal: ControlSignal, state_info: StateSignal):
         self.prev_state = state_info
@@ -155,15 +159,15 @@ class DynamicCatch(Procedure):
             signal = grabber.adjust_signal(signal, state_info)
             if not grabber.is_finished(state_info):
                 signal = tracker.adjust_signal(signal, state_info)
-            finished_grabbers = [grabber for grabber in self.grabbers if grabber.is_finished(state_info)]
-            if len(finished_grabbers) > 1:
-                signal = self.adjust_signal_to_move_center_closer_to_closest_points(signal, state_info)
+        finished_grabbers = [grabber for grabber in self.grabbers if grabber.is_finished(state_info)]
+        if len(finished_grabbers) > 1:
+            signal = self.adjust_signal_to_move_center_closer_to_closest_points(signal, state_info)
         return signal
 
+
     def adjust_signal_to_move_center_closer_to_closest_points(self, signal, state_info):
-        ignore_legs = [tracker.limb_id for grabber, tracker in zip(self.grabbers, self.trackers) if
-                       not grabber.is_finished(state_info)]
-        self.move_center.goal_point = self.get_closest_point(state_info)
+        ignore_legs = [tracker.limb_id for grabber, tracker in zip(self.grabbers, self.trackers) if grabber.is_finished(state_info)]
+        self.move_center.goal_point = self.get_closest_free_point(state_info)
         self.move_center.move_center_speed = self.move_center_speed * 0.2
         self.move_center.ignore_leg_points = ignore_legs
         signal = self.move_center.adjust_signal(signal, state_info)

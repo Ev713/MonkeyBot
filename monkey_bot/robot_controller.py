@@ -38,6 +38,7 @@ class Controller:
         self._start_last_action_time=0
         self.procedures= None
         self.proc_id = 0
+        self.current_grid_center_position = coordinator.instance.init_center
 
         self.launch_instructions = {}
         self.enable_transitional_links = enable_transitional_links
@@ -89,7 +90,7 @@ class Controller:
     def create_plan(self, plan_path=None):
         edge_transitions = []
         if self.enable_transitional_links:
-            edge_transitions = self.get_transition_edges()
+            edge_transitions = self.get_transition_links()
             for e in edge_transitions:
                 assert e in self.launch_instructions
             logging.debug(f"Found {len(edge_transitions):} transition edges")
@@ -113,7 +114,6 @@ class Controller:
     def load_plan(self, filepath):
         with open(filepath) as f:
             self.plan = [parse_action(a) for a in f]
-
 
     def get_center_grid_delta(self, action_name):
         chosen_dir = None
@@ -185,7 +185,7 @@ class Controller:
     def create_or_read_plan(self, folder):
         transition_links = []
         if self.enable_transitional_links:
-            transition_links = self.get_transition_edges()
+            transition_links = self.get_transition_links()
         for e in transition_links:
             assert e in self.launch_instructions
         print(f"Found {len(transition_links)} transition links")
@@ -199,9 +199,8 @@ class Controller:
             print(f"Created and saved new plan to {plan_path}")
 
     def setup_move_center_procedure_sequence(self, current_action):
-        next_grid_center_point = tuple(Vec2d(*self._last_grid_center_pos)
-                                        +Vec2d(*self.get_center_grid_delta(current_action.name)))
-        goal_point = Vec2d(*self.coordinator.grid_to_screen(*next_grid_center_point))
+        self.update_current_center(current_action)
+        goal_point = self.coordinator.grid_to_screen(*self.current_grid_center_position)
         self.procedures = [MoveCenter(goal_point, self.coordinator)]
         self.proc_id = 0
 
@@ -218,12 +217,17 @@ class Controller:
 
         self.proc_id = 0
 
-    def get_transition_edges(self):
-        # Default behavior: use all prunings
-        return self._get_transition_edges_internal(use_p1=True, use_p2=True, use_p3=True)
+    def update_current_center(self, action: Action):
+        if "move_center" not in action.name:
+            return
+        delta = self.get_center_grid_delta(action.name)
+        self.current_grid_center_position = self.current_grid_center_position[0] + delta[0], self.current_grid_center_position[1] + delta[1]
 
-    def _get_transition_edges_internal(self, use_p1: bool = True, use_p2: bool = True, use_p3: bool = True):
+    def get_transition_links(self):
         # Reset launch instructions for a clean run
+        prune_short_jumps = self.coordinator.robot_config.prune_short_jumps
+        prune_in_clique_jumps = self.coordinator.robot_config.prune_in_clique_jumps
+        prune_similar_jumps = self.coordinator.robot_config.prune_similar_jumps
         self.launch_instructions = {}
         edge_transitions = []
         seen_configs = set()
@@ -246,19 +250,19 @@ class Controller:
             # -------------------------------------------------------------------
 
             # Pruning #1: Trivial Jump Elimination
-            if use_p1:
+            if prune_short_jumps:
                 if (grid_distance(center, init1) <= max_ext and
                         grid_distance(center, init2) <= max_ext):
                     continue
 
             # Pruning #2: Clique/Component Check
-            if use_p2:
+            if prune_in_clique_jumps:
                 if all(reverse_cliques[p] == reverse_cliques[init1] for p in [init2, p1, p2, p3]):
                     continue
 
             # Pruning #3: Duplicate Configuration Check (avoids expensive geometric check)
             config_key = None
-            if use_p3:
+            if prune_similar_jumps:
                 reachable = frozenset(self.get_all_catchable_gripping_points(center))
                 config_key = (init1, init2, reachable)
                 if config_key in seen_configs:
@@ -275,7 +279,7 @@ class Controller:
             launch = self.check_jump_is_possible(init1_screen, init2_screen, p1_screen, p2_screen, p3_screen)
 
             if launch:
-                if use_p3:
+                if prune_similar_jumps:
                     seen_configs.add(config_key)  # Record the new unique configuration
 
                 self.launch_instructions[key] = launch
@@ -334,9 +338,9 @@ class Controller:
 
         # Finding legs that are "close" - closer then cellsize/3 (3 is arbitrary)
         jumping_leg_1_id = [i for i in range(self.coordinator.num_legs) if
-                            (state_info.feet_pos[i] - jumping_leg_1_pos).length<self.coordinator.cell_size()/3][0]
+                            (state_info.feet_pos[i] - jumping_leg_1_pos).length<self.coordinator.cell_size/3][0]
         jumping_leg_2_id = [i for i in range(self.coordinator.num_legs) if
-                            (state_info.feet_pos[i] - jumping_leg_2_pos).length<self.coordinator.cell_size()/3][0]
+                            (state_info.feet_pos[i] - jumping_leg_2_pos).length<self.coordinator.cell_size/3][0]
 
         catch_points = self.get_all_catchable_gripping_points((c_x, c_y))[:3]
 
@@ -403,7 +407,7 @@ class ManualController(Controller):
         self.actions = None
         transition_links =[]
         if enable_transitional_links:
-            transition_links = self.get_transition_edges()
+            transition_links = self.get_transition_links()
             for e in transition_links:
                 assert e in self.launch_instructions
         logging.debug(f"Found {len(transition_links)}: transition edges")
@@ -413,8 +417,6 @@ class ManualController(Controller):
         self.t = 0
         self.parsed_actions = []
         self.actions_finished = None
-
-        self.center_position = coordinator.instance.init_center
 
     def check_possible_actions(self):
         self.actions = list(self.upf_simulator.get_applicable_actions(self.state))
@@ -467,18 +469,11 @@ class ManualController(Controller):
             return None
         action =self.actions[choice]
         parsed_action = self.parsed_actions[int(choice)]
-        self.update_last_center(parsed_action)
         try:
             self.state = self.upf_simulator.apply(self.state, action[0], action[1])
         except Exception as e:
             raise Exception(f'Applying action resulted in: \n{e}')
         return parsed_action
-
-    def update_last_center(self, action: Action):
-        if "move_center" not in action.name:
-            return
-        delta = self.get_center_grid_delta(action.name)
-        self.center_position = self.center_position[0] + delta[0], self.center_position[1] + delta[1]
 
     @property
     def _last_grid_center_pos(self):

@@ -2,8 +2,8 @@ import json
 import os
 import random
 
-grid_size_x = 20
-grid_size_y = 20
+grid_size_x = 16
+grid_size_y = 16
 
 goal_point = [grid_size_x-2, grid_size_y-2]
 init_center = [2, 2]
@@ -25,7 +25,7 @@ instance = {
 all_points = [[x+1, y+1] for x in range(grid_size_x) for y in range(grid_size_y) if [x+1, y+1] not in init_feet and x%2==0 and y %2==0]
 
 print(f"{len(all_points)} possible grip points")
-new_points = random.sample(all_points, 30)
+new_points = random.sample(all_points, 10)
 print(f"{len(new_points)} grip points chosen")
 
 instance['gripping_points'] += new_points

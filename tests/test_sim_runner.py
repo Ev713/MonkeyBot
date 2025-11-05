@@ -15,13 +15,14 @@ sim_config = SimConfig(
         screen_height= 1000,
         screen_width= 1000,
         fps=120,
-        gravity=0.25
+        gravity=0.25,
+        cell_size=50
         )
 
 robot_config = RobotConfig(
     epsilon=0.1,
     extension_speed=4,
-    rotation_speed=4,
+    rotation_speed=2,
     move_center_speed=4,
     body_mass=5,
     body_radius=0.4,
@@ -31,6 +32,9 @@ robot_config = RobotConfig(
     leg_spring_damping=1.5,
     min_extension=0.1,
     max_takeoff_speed=20,
+    prune_short_jumps=False,
+    prune_in_clique_jumps=False,
+    prune_similar_jumps=False,
 )
 
 def test_simple_climbing():
@@ -46,19 +50,23 @@ def test_jump_procedure_sequence():
     sim_runner = SimRunner(instance, sim_config=sim_config, robot_config=robot_config)
     sim_runner.execute_simulation(save=save_simulation)
 
-def test_complex_actions_problem():
-    instance = load_instance("Mixed", INSTANCES_FOLDER)
+def test_complex_actions_problem(manual=False):
+    instance = load_instance("Random1", INSTANCES_FOLDER)
     sim_runner = SimRunner(instance, sim_config=sim_config, robot_config=robot_config)
     sim_runner.log_rotation_motors = [0]
-    sim_runner.execute_simulation(save=True)
+    if manual:
+        sim_runner.execute_manual_simulation(save=True)
+    else:
+        sim_runner.execute_simulation(save=True)
+
 
 if __name__ == "__main__":
     #test_jump_procedure_sequence()
     #test_simple_climbing()
-    #test_complex_actions_problem()
+    test_complex_actions_problem(manual=False)
     #
-    df_metrics, df_pruning = analyze_pruning_combinations("Mixed", "instances")
-    print("--- Metrics Table ---")
-    print(df_metrics)
-    print("\n--- Pruning & Transition Time ---")
-    print(df_pruning)
+#    df_metrics, df_pruning = analyze_pruning_combinations("Mixed", "instances")
+#    print("--- Metrics Table ---")
+#    print(df_metrics)
+#    print("\n--- Pruning & Transition Time ---")
+#    print(df_pruning)

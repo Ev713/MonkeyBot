@@ -266,7 +266,8 @@ def solve_problem(problem):
     # Instead of returning just the plan, return the full result object
     with OneshotPlanner(name='enhsp') as planner:
         result = planner.solve(problem)
-        return result
+        return result.plan
+
 def solve_instance(instance: MonkeyBotProblemInstance):
     return solve_problem(get_problem(instance))
 

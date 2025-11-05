@@ -122,9 +122,8 @@ class Launcher:
 
     def starting_point_in_permitted_range(self, start_point):
         for p in self.init_jump_leg_points:
-            if (start_point-p).length > self.max_extension:
-                return False
-            if self.min_extension>(start_point-p).length:
+            e = (start_point-p).length
+            if e < self.min_extension or e > self.max_extension:
                 return False
         return True
 
@@ -162,9 +161,8 @@ class GeometricLauncher(Launcher):
             for r in np.linspace(0.9*min_ext+0.1*max_ext, 0.1*min_ext+0.9*max_ext, 3):  # 3 radii (inner, mid, outer)
                 for theta in angles:
                     p = leg + Vec2d(math.cos(theta), math.sin(theta)) * r
-                    if all(min_ext <= (p - l).length <= max_ext for l in [leg_1_pos, leg_2_pos]):
+                    if self.starting_point_in_permitted_range(p):
                         circle_points.append(p)
-
         best_point = None
         best_length = -1.0
 

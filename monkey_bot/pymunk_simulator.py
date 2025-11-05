@@ -37,7 +37,7 @@ class RotationMotor:
         elif self.desired_rate == 0:
             new_rate = self.desired_rate
         else:
-            p = 0.05
+            p = 1
             new_rate = (1-p)*real_rate+p*self.desired_rate
         self.motor.rate = new_rate
         self.last_angle = self.curr_angle
