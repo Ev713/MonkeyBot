@@ -52,9 +52,10 @@ class SimRunner:
         while self.simulator.run:
             self.run_step()
 
-    def execute_simulation(self, plans_folder="plans", enable_transitional_links=True, save=False):
+    def execute_simulation(self, plans_folder="plans", transition_links_folder = 'transition_links',enable_transitional_links=True, save=False):
         self.start_controller(enable_transitional_links=enable_transitional_links)
-        self.controller.create_or_read_plan(folder=plans_folder)
+        self.controller.create_or_read_plan(plans_folder=plans_folder,
+                                            transition_links_folder = transition_links_folder)
         self.start_simulator()
         if save:
             self.simulator.initiate_saver()

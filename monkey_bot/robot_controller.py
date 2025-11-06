@@ -1,3 +1,4 @@
+import ast
 import itertools
 import logging
 import math
@@ -14,7 +15,7 @@ from monkey_bot import upf_solver
 from monkey_bot.action import parse_action, Action
 import monkey_bot.upf_solver
 from monkey_bot.procedure import MoveCenter, ReleaseGrip, Mixed, Tracker, Grabber, AdjustLength, DynamicCatch, \
-    MultiOptionalDynamicCatch
+    MultiOptionalDynamicCatch, ReleaseAtPoint
 from monkey_bot.signals import ControlSignal, StateSignal
 from monkey_bot.simulation_config import InstanceSimulationCoordinator
 from monkey_bot.trajectory_finder import Launcher, GeometricLauncher
@@ -87,23 +88,22 @@ class Controller:
     def get_current_action(self):
         return self.plan[self.actions_finished]
 
-    def create_plan(self, plan_path=None):
-        edge_transitions = []
+    def create_plan(self, plan_path=None, transition_links_path=None):
+        transition_links = []
         if self.enable_transitional_links:
-            edge_transitions = self.get_transition_links()
-            for e in edge_transitions:
-                assert e in self.launch_instructions
-            logging.debug(f"Found {len(edge_transitions):} transition edges")
-        problem = get_problem(self.coordinator.instance, edge_transitions)
-        #simulate(problem, )
-        start= time.perf_counter()
-        logging.debug("Started solving the problem")
+            transition_links = self.get_transition_links()
+            logging.info(f"Found {len(transition_links)} transition links")
+        problem = get_problem(self.coordinator.instance, transition_links)
+        start = time.perf_counter()
+        logging.info("Started solving the problem")
         plan = solve_problem(problem)
-        logging.debug(f"Finished solving the problem. Took {time.perf_counter() - start} seconds")
+        logging.info(f"Finished solving the problem. Took {time.perf_counter() - start} seconds")
         if plan is None:
             raise ValueError("Planning problem is unsolvable")
         if plan_path:
             self.save_plan(plan, plan_path)
+        if transition_links_path:
+            self.save_transition_links(transition_links_path)
         self.plan = [parse_action(a) for a in plan.actions]
 
     def save_plan(self, plan, plan_path=None):
@@ -182,20 +182,16 @@ class Controller:
     def read_plan(self, file_path):
         self.plan = [parse_action(l) for l in open(file_path)]
 
-    def create_or_read_plan(self, folder):
-        transition_links = []
-        if self.enable_transitional_links:
-            transition_links = self.get_transition_links()
-        for e in transition_links:
-            assert e in self.launch_instructions
-        print(f"Found {len(transition_links)} transition links")
-        plan_path = f"{folder}/{self.coordinator.instance.name}.txt"
+    def create_or_read_plan(self, plans_folder, transition_links_folder):
+        transition_links_path = f"{transition_links_folder}/{self.coordinator.instance.name}.txt"
+        plan_path = f"{plans_folder}/{self.coordinator.instance.name}.txt"
 
         if os.path.exists(plan_path):
             self.read_plan(plan_path)
             print(f"Loaded existing plan from {plan_path}")
+            self.read_transition_links(transition_links_path)
         else:
-            self.create_plan(plan_path=plan_path)
+            self.create_plan(plan_path=plan_path, transition_links_path=transition_links_path)
             print(f"Created and saved new plan to {plan_path}")
 
     def setup_move_center_procedure_sequence(self, current_action):
@@ -218,18 +214,36 @@ class Controller:
         self.proc_id = 0
 
     def update_current_center(self, action: Action):
-        if "move_center" not in action.name:
-            return
-        delta = self.get_center_grid_delta(action.name)
-        self.current_grid_center_position = self.current_grid_center_position[0] + delta[0], self.current_grid_center_position[1] + delta[1]
+        if "move_center"  in action.name:
+            delta = self.get_center_grid_delta(action.name)
+            self.current_grid_center_position = self.current_grid_center_position[0] + delta[0], \
+                                                self.current_grid_center_position[1] + delta[1]
+        if "tran" in action.name:
+            _, _, _, _, _, new_x, new_y = action.args[0].split('_')
+            self.current_grid_center_position = int(new_x), int(new_y)
 
-    def get_transition_links(self):
+    def read_transition_links(self, filepath):
+        for l in open(filepath).readlines():
+            key, start, vec = ast.literal_eval(l)
+            start = Vec2d(*start)
+            vec = Vec2d(*vec)
+            self.launch_instructions[key] = start, vec
+        return self.launch_instructions.keys()
+
+    def save_transition_links(self, filepath):
+        file = open(filepath, "w")
+        for key, (start, vec) in self.launch_instructions.items():
+            file.write(f"{key}, {tuple(float(x) for x in start)}, {tuple(float(x) for x in vec)}\n")
+
+    def get_transition_links(self, filepath=None):
+        if not filepath is None:
+            return self.read_transition_links(filepath)
         # Reset launch instructions for a clean run
         prune_short_jumps = self.coordinator.robot_config.prune_short_jumps
         prune_in_clique_jumps = self.coordinator.robot_config.prune_in_clique_jumps
         prune_similar_jumps = self.coordinator.robot_config.prune_similar_jumps
         self.launch_instructions = {}
-        edge_transitions = []
+        transition_links = []
         seen_configs = set()
         cliques = self.find_cliques()
         reverse_cliques = {gp: i for gp in self.coordinator.instance.gripping_points for i in cliques if
@@ -268,7 +282,6 @@ class Controller:
                 if config_key in seen_configs:
                     continue
 
-                    # --- Expensive Geometric/Physical Check ---
             init1_screen = self.coordinator.grid_to_screen(*init1)
             init2_screen = self.coordinator.grid_to_screen(*init2)
             p1_screen = self.coordinator.grid_to_screen(*p1)
@@ -283,9 +296,9 @@ class Controller:
                     seen_configs.add(config_key)  # Record the new unique configuration
 
                 self.launch_instructions[key] = launch
-                edge_transitions.append((init1, init2, center))
-        edge_transitions = set(edge_transitions)
-        return edge_transitions
+                transition_links.append((init1, init2, center))
+        transition_links = set(transition_links)
+        return transition_links
 
     def get_all_catchable_gripping_points(self, center_point):
         return [gp for gp in self.coordinator.instance.gripping_points if
@@ -324,13 +337,15 @@ class Controller:
         )
 
         start_point, takeoff_vector = jump_validator.suggest_trajectory()
-
+        if start_point is None or takeoff_vector is None:
+            return None
         if jump_validator.setup_achieves_goal(start_point, takeoff_vector):
             return start_point, takeoff_vector
         else:
             return None
 
     def setup_jump_procedure_sequence(self, current_action:Action, state_info:StateSignal):
+        self.update_current_center(current_action)
         init1_x, init1_y, init2_x, init2_y, c_x, c_y = [int(x) for x in current_action.args[0].split('_') if x.isnumeric()]
 
         jumping_leg_1_pos = self.coordinator.grid_to_screen(init1_x, init1_y)
@@ -341,10 +356,6 @@ class Controller:
                             (state_info.feet_pos[i] - jumping_leg_1_pos).length<self.coordinator.cell_size/3][0]
         jumping_leg_2_id = [i for i in range(self.coordinator.num_legs) if
                             (state_info.feet_pos[i] - jumping_leg_2_pos).length<self.coordinator.cell_size/3][0]
-
-        catch_points = self.get_all_catchable_gripping_points((c_x, c_y))[:3]
-
-        screen_catch_points = [self.coordinator.grid_to_screen(*p) for p in catch_points]
 
         ignore_legs = [leg_id for leg_id in range(self.coordinator.num_legs)
                        if leg_id not in (jumping_leg_1_id, jumping_leg_2_id)]
@@ -372,13 +383,11 @@ class Controller:
 
         on_position = MoveCenter(tuple(starting_point), self.coordinator, ignore_legs)
         self.procedures.append(on_position)
-
-        launch = MoveCenter(take_off_point, self.coordinator, ignore_legs)
+        launch = Mixed([MoveCenter(take_off_point, self.coordinator, ignore_legs),
+                        ReleaseAtPoint(50, take_off_point, self.coordinator)], self.coordinator, finish_at_any=True)
         launch.move_center_speed = jumping_vector.length
         self.procedures.append(launch)
 
-        takeoff_releasers = [ReleaseGrip(i, self.coordinator) for i in (jumping_leg_1_id, jumping_leg_2_id)]
-        self.procedures.append(Mixed(takeoff_releasers, self.coordinator))
         admissable_targets = [self.coordinator.grid_to_screen(*p) for p in self.get_all_catchable_gripping_points((c_x, c_y))]
 
         catcher = MultiOptionalDynamicCatch(admissable_targets, state_info, self.coordinator)
@@ -408,9 +417,7 @@ class ManualController(Controller):
         transition_links =[]
         if enable_transitional_links:
             transition_links = self.get_transition_links()
-            for e in transition_links:
-                assert e in self.launch_instructions
-        logging.debug(f"Found {len(transition_links)}: transition edges")
+        logging.info(f"Found {len(transition_links)}: transition edges")
         self.problem = get_problem(self.coordinator.instance, transition_links)
         self.upf_simulator = SequentialSimulator(self.problem)
         self.state = self.upf_simulator.get_initial_state()

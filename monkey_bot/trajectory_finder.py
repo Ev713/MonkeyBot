@@ -140,6 +140,8 @@ class GeometricLauncher(Launcher):
 
     def suggest_trajectory(self):
         start = self.choose_start()
+        if start is None:
+            return None, None
         return start, self.find_best_launch_vector(start, self.choose_goal_point())
 
     def choose_goal_point(self):

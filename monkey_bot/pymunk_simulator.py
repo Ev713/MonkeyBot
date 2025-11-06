@@ -23,7 +23,7 @@ class RotationMotor:
         self.leg = leg
         self.desired_rate = 0
         self.last_angle = 0
-        self.alpha = 0.5
+        self.last_body_angle = 0
         self.log = None
 
 
@@ -37,13 +37,16 @@ class RotationMotor:
         elif self.desired_rate == 0:
             new_rate = self.desired_rate
         else:
-            p = 1
+            p = 0.9
             new_rate = (1-p)*real_rate+p*self.desired_rate
         self.motor.rate = new_rate
         self.last_angle = self.curr_angle
+        self.last_body_angle = self.curr_body_angle
         if self.log is not None:
-            self.log.write(f"{self.desired_rate}, {real_rate}, {new_rate}\n")
+            self.log.write(f"{self.desired_rate}, {real_rate}, {new_rate}, {self.body_rate(dt)}\n")
 
+    def body_rate(self, dt):
+        return -self.normalize_angle(self.curr_body_angle - self.last_body_angle) / dt
 
     def actual_rate(self, dt):
         return -self.normalize_angle(self.curr_angle - self.last_angle)/dt
@@ -54,6 +57,11 @@ class RotationMotor:
     @property
     def curr_angle(self):
         angle_diff =self.leg.angle#=  self.body.angle - self.leg.angle
+        return self.normalize_angle(angle_diff)
+
+    @property
+    def curr_body_angle(self):
+        angle_diff = self.body.angle  # =  self.body.angle - self.leg.angle
         return self.normalize_angle(angle_diff)
 
 class SpringMotor:

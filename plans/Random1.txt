@@ -1,6 +1,0 @@
-use_tran(tran_3_1_1_3_13_14)
-move_foot_0(GP_15_15)
-move_foot_1(GP_11_13)
-move_foot_2(GP_13_15)
-release_foot_1
-move_center_right

@@ -63,17 +63,29 @@ class AdjustAngle(Procedure):
         super().__init__(coordinator)
         self.limb_id = limb_id
         self.target_point = target_point
+        self.prev_abs_rate = 0
+        self.acceleration_rate = 1
 
     def adjust_signal(self, signal: ControlSignal, state_info):
         if self.rotation_speed is None:
             raise Exception("Rotation speed unfilled")
+
         d = self.curr_angle_difference(state_info)
-        abs_rate = self.rotation_speed
-        if abs(d) < abs_rate * self.dt:
-            abs_rate = d*self.dt
-        p = 0.5
-        abs_rate = p*abs_rate+(1-p)*(abs(d)/math.pi)*abs_rate
-        signal.rotation[self.limb_id] = - abs_rate if d > 0 else abs_rate
+        sign = -1 if d > 0 else 1
+        desired_rate = self.rotation_speed
+        final_rate = desired_rate
+        if self.acceleration_rate > 0:
+            acceleration_limited_speed = self.prev_abs_rate + self.acceleration_rate * self.dt
+            required_stop_abs_rate = math.sqrt(2 * self.acceleration_rate * abs(d))
+
+            if self.prev_abs_rate > required_stop_abs_rate:
+                decceleration_limited_rate = self.prev_abs_rate - self.rotation_speed * self.dt
+            else:
+                decceleration_limited_rate = acceleration_limited_speed
+            final_rate = min(desired_rate, acceleration_limited_speed, decceleration_limited_rate)
+
+        self.prev_abs_rate = final_rate
+        signal.rotation[self.limb_id] = sign*final_rate
         return signal
 
     def curr_angle_difference(self, state_info):
@@ -88,12 +100,12 @@ class AdjustAngle(Procedure):
         return abs(self.curr_angle_difference(state_info)) <= self.epsilon
 
 class MultiOptionalDynamicCatch(Procedure):
-    def __init__(self, admissable_catch_points, state, coordinator:InstanceSimulationCoordinator):
+    def __init__(self, admissable_catch_points, state_info:StateSignal, coordinator:InstanceSimulationCoordinator):
         super().__init__(coordinator)
         self.admissable_catch_points = admissable_catch_points
         self.chosen_catch_points = []
-        self.update_catch_points(state)
-        self.dynamic_catcher = DynamicCatch(self.chosen_catch_points, state, coordinator)
+        self.dynamic_catcher = DynamicCatch(admissable_catch_points[:len(state_info.feet_pos)], state_info, coordinator)
+        self.update_catch_points(state_info)
 
     def adjust_signal(self, signal: ControlSignal, state_info):
         self.update_catch_points(state_info)
@@ -121,8 +133,10 @@ class MultiOptionalDynamicCatch(Procedure):
             if self.chosen_catch_points[i] is None and j not in taken:
                 self.chosen_catch_points[i] = self.admissable_catch_points[j]
                 taken.add(j)
-
+        for tracker in self.dynamic_catcher.trackers:
+            tracker.set_target_point(self.chosen_catch_points[tracker.limb_id])
         return self.chosen_catch_points
+
 class DynamicCatch(Procedure):
     def __init__(self, target_points, state ,coordinator: InstanceSimulationCoordinator):
         super().__init__(coordinator)
@@ -131,6 +145,7 @@ class DynamicCatch(Procedure):
         self.prev_state = state
         self.grabbers = []
         self.move_center = MoveCenter(None, coordinator)
+        self.finished_legs = None
 
         for limb_id in range(self.num_legs):
             if target_points[limb_id] is None:
@@ -154,25 +169,23 @@ class DynamicCatch(Procedure):
         return all((foot - p).length>self.epsilon for foot in state_info.feet_pos)
 
     def adjust_signal(self, signal: ControlSignal, state_info: StateSignal):
+        self.update_finished_legs(state_info)
         self.prev_state = state_info
         for grabber, tracker in zip(self.grabbers, self.trackers):
             signal = grabber.adjust_signal(signal, state_info)
             if not grabber.is_finished(state_info):
                 signal = tracker.adjust_signal(signal, state_info)
-        finished_grabbers = [grabber for grabber in self.grabbers if grabber.is_finished(state_info)]
-        if len(finished_grabbers) > 1:
+        if len(self.finished_legs) > 1:
             signal = self.adjust_signal_to_move_center_closer_to_closest_points(signal, state_info)
         return signal
 
-
     def adjust_signal_to_move_center_closer_to_closest_points(self, signal, state_info):
-        ignore_legs = [tracker.limb_id for grabber, tracker in zip(self.grabbers, self.trackers) if grabber.is_finished(state_info)]
+        ignore_legs = [tracker.limb_id for tracker in self.trackers if tracker.limb_id not in self.finished_legs]
         self.move_center.goal_point = self.get_closest_free_point(state_info)
         self.move_center.move_center_speed = self.move_center_speed * 0.2
         self.move_center.ignore_leg_points = ignore_legs
         signal = self.move_center.adjust_signal(signal, state_info)
         return signal
-
 
     def move_vector(self, state_info: StateSignal):
         if self.prev_state is None:
@@ -186,6 +199,9 @@ class DynamicCatch(Procedure):
 
     def is_finished(self, state_info:StateSignal):
         return all(g.is_finished(state_info) for g in self.grabbers)
+
+    def update_finished_legs(self, state_info:StateSignal):
+        self.finished_legs = [tracker.limb_id for grabber, tracker in zip(self.grabbers, self.trackers) if grabber.is_finished(state_info)]
 
 class Grabber(Procedure):
     def __init__(self, limb_id, target_point: Vec2d, coordinator: InstanceSimulationCoordinator):
@@ -201,6 +217,26 @@ class Grabber(Procedure):
 
     def is_finished(self, state_info:StateSignal):
         return state_info.active_grips[self.limb_id] == 1
+
+class ReleaseAtPoint(Procedure):
+    def __init__(self, tolerance, target_point, coordinator: InstanceSimulationCoordinator):
+        super().__init__(coordinator)
+        self.tolerance = tolerance
+        self.target_point = target_point
+        self.released = False
+
+    def adjust_signal(self, signal: ControlSignal, state_info: StateSignal):
+        center = state_info.center_pos
+        perform_release = (self.target_point - center).length < self.tolerance
+        if not perform_release:
+            return signal
+        for i, _ in enumerate(state_info.feet_pos):
+            signal.grip[i] = -1
+        self.released = True
+        return signal
+
+    def is_finished(self, state_info:StateSignal):
+        return self.released
 
 class Tracker(Procedure):
     def __init__(self, limb_id, target_point: Vec2d, coordinator:InstanceSimulationCoordinator):
@@ -232,6 +268,8 @@ class MoveCenter(Procedure):
                                  for limb_id in range(self.num_legs)]
         self.angle_adjusters = [AdjustAngle(limb_id, None, coordinator)
                                  for limb_id in range(self.num_legs)]
+        for a in self.angle_adjusters:
+            a.acceleration_rate = 0
         self._prev_center_pos = None
         self.powerup = 1
         self.lag_tolerance_threshold = 0.1
@@ -292,10 +330,11 @@ class MoveCenter(Procedure):
         return (state_info.center_pos - self.goal_point).length < self.epsilon
 
 class Mixed(Procedure):
-    def __init__(self, procs:List[Procedure], coordinator):
+    def __init__(self, procs:List[Procedure], coordinator, finish_at_any = False):
         super().__init__(coordinator)
         self.procs = procs
         self.finished = [False for _ in procs]
+        self.finish_at_any = finish_at_any
 
     def adjust_signal(self, signal: ControlSignal, state_info):
         for proc in self.procs:
@@ -306,6 +345,8 @@ class Mixed(Procedure):
         for i, proc in enumerate(self.procs):
             if proc.is_finished(state_info):
                 self.finished[i] = True
+        if self.finish_at_any:
+            return any (self.finished)
         return all(self.finished)
 
 
