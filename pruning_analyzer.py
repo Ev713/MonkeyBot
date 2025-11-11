@@ -14,12 +14,31 @@ from typing import Tuple, Any, Dict
 
 # Helper: Default simulation configuration (matching values found in test_sim_runner.py)
 def get_default_sim_robot_configs(instance):
-    sim_config = SimConfig(screen_height=1000, screen_width=1000, fps=120, gravity=0.25)
+    sim_config = SimConfig(
+        screen_height=1000,
+        screen_width=1000,
+        fps=120,
+        gravity=1,
+        cell_size=40
+    )
+
     robot_config = RobotConfig(
-        epsilon=0.1, extension_speed=4, rotation_speed=4, move_center_speed=4,
-        body_mass=5, body_radius=0.4, foot_mass=0.2, leg_mass=0.2,
-        leg_spring_stiffness=500, leg_spring_damping=1.5, min_extension=0.1,
+        epsilon=0.1,
+        extension_speed=4,
+        rotation_speed=4,
+        move_center_speed=4,
+        body_mass=5,
+        body_radius=0.4,
+        foot_mass=0.2,
+        leg_mass=0.2,
+        leg_spring_stiffness=500,
+        leg_spring_damping=1.5,
+        min_extension=0.2,
         max_takeoff_speed=20,
+        max_jump_dist=15,
+        prune_short_jumps=False,
+        prune_in_clique_jumps=False,
+        prune_similar_jumps=False,
     )
     return sim_config, robot_config
 
@@ -42,6 +61,9 @@ def analyze_pruning_combinations(instance_name: str, instances_folder: str = "in
     pruning_times: Dict[str, Dict[str, Any]] = {}
 
     for p1, p2, p3 in pruning_combinations:
+        robot_config.prune_short_jumps = p1
+        robot_config.prune_in_clique_jumps = p2
+        robot_config.prune_similar_jumps = p3
         pruning_name = f"P1={int(p1)}, P2={int(p2)}, P3={int(p3)}"
         print(f"--- Running {pruning_name} for instance: {instance_name} ---")
 
@@ -49,7 +71,7 @@ def analyze_pruning_combinations(instance_name: str, instances_folder: str = "in
         pruning_start_time = time.perf_counter()
 
         # Call the internal function to get jump transitions
-        viable_jumps = controller.get_transition_links(use_p1=p1, use_p2=p2, use_p3=p3)
+        viable_jumps = controller.get_transition_links()
 
         pruning_time = time.perf_counter() - pruning_start_time
         # Remove duplicates

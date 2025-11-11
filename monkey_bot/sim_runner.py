@@ -26,9 +26,9 @@ class SimRunner:
 
     def start_controller(self, manual=False, enable_transitional_links=True):
         if manual:
-            self.controller = ManualController(self.inst_sim_coordiator, enable_transitional_links=enable_transitional_links)
+            self.controller = ManualController(self.inst_sim_coordiator, enable_transition_links=enable_transitional_links)
         else:
-            self.controller = Controller(self.inst_sim_coordiator, enable_transitional_links=enable_transitional_links)
+            self.controller = Controller(self.inst_sim_coordiator, enable_transition_links=enable_transitional_links)
 
     def run_step(self):
         state = self.simulator.get_state()

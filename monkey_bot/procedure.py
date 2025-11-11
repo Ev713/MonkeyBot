@@ -63,8 +63,32 @@ class AdjustAngle(Procedure):
         super().__init__(coordinator)
         self.limb_id = limb_id
         self.target_point = target_point
+
+    def adjust_signal(self, signal: ControlSignal, state_info):
+        if self.rotation_speed is None:
+            raise Exception("Rotation speed unfilled")
+
+        d = self.curr_angle_difference(state_info)
+        sign = -1 if d > 0 else 1
+        signal.rotation[self.limb_id] = sign*self.rotation_speed
+        return signal
+
+    def curr_angle_difference(self, state_info):
+        v1 = state_info.center_pos - state_info.feet_pos[self.limb_id]
+        v2 = state_info.center_pos - self.target_point
+        return v1.get_angle_between(v2)
+
+
+    def is_finished(self, state_info:StateSignal):
+        if self.target_point is None or self.epsilon is None:
+            raise Exception("Target point or epsilon is unfilled")
+        return abs(self.curr_angle_difference(state_info)) <= self.epsilon
+
+class SmoothAdjustAngle(AdjustAngle):
+    def __init__(self, limb_id, target_point: Vec2d,coordinator: InstanceSimulationCoordinator, acceleration_rate=1):
+        super().__init__(limb_id, target_point, coordinator)
         self.prev_abs_rate = 0
-        self.acceleration_rate = 1
+        self.acceleration_rate = acceleration_rate
 
     def adjust_signal(self, signal: ControlSignal, state_info):
         if self.rotation_speed is None:
@@ -87,17 +111,6 @@ class AdjustAngle(Procedure):
         self.prev_abs_rate = final_rate
         signal.rotation[self.limb_id] = sign*final_rate
         return signal
-
-    def curr_angle_difference(self, state_info):
-        v1 = state_info.center_pos - state_info.feet_pos[self.limb_id]
-        v2 = state_info.center_pos - self.target_point
-        return v1.get_angle_between(v2)
-
-
-    def is_finished(self, state_info:StateSignal):
-        if self.target_point is None or self.epsilon is None:
-            raise Exception("Target point or epsilon is unfilled")
-        return abs(self.curr_angle_difference(state_info)) <= self.epsilon
 
 class MultiOptionalDynamicCatch(Procedure):
     def __init__(self, admissable_catch_points, state_info:StateSignal, coordinator:InstanceSimulationCoordinator):
@@ -130,11 +143,15 @@ class MultiOptionalDynamicCatch(Procedure):
 
         # Greedy assignment
         for dist, i, j in pairs:
+            if len(taken) == len(self.chosen_catch_points):
+                break
             if self.chosen_catch_points[i] is None and j not in taken:
                 self.chosen_catch_points[i] = self.admissable_catch_points[j]
                 taken.add(j)
-        for tracker in self.dynamic_catcher.trackers:
+        for tracker, grabber in zip(self.dynamic_catcher.trackers, self.dynamic_catcher.grabbers):
             tracker.set_target_point(self.chosen_catch_points[tracker.limb_id])
+            grabber.target_point = self.chosen_catch_points[tracker.limb_id]
+
         return self.chosen_catch_points
 
 class DynamicCatch(Procedure):
@@ -155,18 +172,23 @@ class DynamicCatch(Procedure):
             self.grabbers.append(grabber)
             self.trackers.append(tracker)
 
-    def get_closest_free_point(self, state_info:StateSignal):
+    def get_closest_free_point(self, state_info: StateSignal):
         center = state_info.center_pos
         closest_point = None
+        min_dist = float('inf')
         for p in self.target_points:
-            if closest_point is None or (p-center).length < (closest_point - center).length and self.is_free(state_info, p):
-                closest_point = p
+            if self.is_free(state_info, p):
+                dist = (p - center).length
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_point = p
         if closest_point is None:
             return center
         return closest_point
 
     def is_free(self, state_info, p):
-        return all((foot - p).length>self.epsilon for foot in state_info.feet_pos)
+        foot_dists = [(foot - p).length for foot in state_info.feet_pos]
+        return all([d > 2*self.epsilon for d in foot_dists])
 
     def adjust_signal(self, signal: ControlSignal, state_info: StateSignal):
         self.update_finished_legs(state_info)
@@ -175,8 +197,9 @@ class DynamicCatch(Procedure):
             signal = grabber.adjust_signal(signal, state_info)
             if not grabber.is_finished(state_info):
                 signal = tracker.adjust_signal(signal, state_info)
-        if len(self.finished_legs) > 1:
-            signal = self.adjust_signal_to_move_center_closer_to_closest_points(signal, state_info)
+        #if len(self.finished_legs) > 1:
+        #    signal = self.adjust_signal_to_move_center_closer_to_closest_points(signal, state_info)
+
         return signal
 
     def adjust_signal_to_move_center_closer_to_closest_points(self, signal, state_info):
@@ -243,7 +266,7 @@ class Tracker(Procedure):
         super().__init__(coordinator)
         self.limb_id = limb_id
         self.target_point = target_point
-        self.angle_adjuster = AdjustAngle(limb_id, target_point, coordinator)
+        self.angle_adjuster = SmoothAdjustAngle(limb_id, target_point, coordinator)
         self.length_adjuster = AdjustLength(limb_id, None, coordinator)
 
     def set_target_point(self, target_point: Vec2d):
@@ -267,7 +290,7 @@ class MoveCenter(Procedure):
         self.length_adjusters = [AdjustLength(limb_id, None, coordinator, None)
                                  for limb_id in range(self.num_legs)]
         self.angle_adjusters = [AdjustAngle(limb_id, None, coordinator)
-                                 for limb_id in range(self.num_legs)]
+                                for limb_id in range(self.num_legs)]
         for a in self.angle_adjusters:
             a.acceleration_rate = 0
         self._prev_center_pos = None
@@ -276,6 +299,8 @@ class MoveCenter(Procedure):
 
     def _calc_next_point(self, state_info:StateSignal):
         move_vec = (self.goal_point - state_info.center_pos)
+        if move_vec.length == 0:
+           return state_info.center_pos
         return state_info.center_pos + move_vec/move_vec.length*self.dt*self.move_center_speed
 
     def get_adjuster(self, limb_id):
@@ -304,24 +329,23 @@ class MoveCenter(Procedure):
 
         for length_adj, angle_adj in zip(self.length_adjusters, self.angle_adjusters):
             limb_id = length_adj.limb_id
-            foot_pos = state_info.feet_pos[limb_id]
-            next_foot_vec = foot_pos - aim_center
-            curr_foot_vec = foot_pos - state_info.center_pos
-            length_adj.goal_extension = max(self.min_extension, next_foot_vec.length)
-            length_adj.extension_speed = abs(next_foot_vec.length - curr_foot_vec.length) / self.dt
 
-            angle_diff = next_foot_vec.get_angle_between(curr_foot_vec)
             if limb_id in active_legs:
-                angle_adj.target_point = center_pos + next_foot_vec
-            else:
-                angle_adj.target_point = foot_pos
-            angle_adj.extension_speed = abs(angle_diff) / self.dt
+                next_foot_vec = state_info.feet_pos[limb_id] - aim_center
+                curr_foot_vec = state_info.feet_pos[limb_id] - center_pos
+                length_adj.goal_extension = max(self.min_extension, next_foot_vec.length)
+                length_adj.extension_speed = abs(next_foot_vec.length - curr_foot_vec.length) / self.dt
 
-        for a in self.length_adjusters:
-            if a.limb_id in active_legs:
-                signal = a.adjust_signal(signal, state_info)
-        for a in self.angle_adjusters:
-            signal = a.adjust_signal(signal, state_info)
+                angle_diff = next_foot_vec.get_angle_between(curr_foot_vec)
+                angle_adj.target_point = center_pos + next_foot_vec
+                angle_adj.extension_speed = - abs(angle_diff) / self.dt
+            else:
+                angle_adj.target_point = state_info.feet_pos[limb_id] # Keep leg from rotating aimlessly by pointing in the previous direction
+
+        for a_l, a_a in zip(self.length_adjusters, self.angle_adjusters):
+            if a_l.limb_id in active_legs:
+                signal = a_l.adjust_signal(signal, state_info)
+            signal = a_a.adjust_signal(signal, state_info)
 
         return signal
 

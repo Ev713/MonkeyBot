@@ -1,0 +1,14 @@
+move_foot_0(GP_3_3)
+move_center_up
+release_foot_1
+move_center_up
+move_center_right
+move_foot_1(GP_5_5)
+move_foot_0(GP_3_7)
+use_tran(tran_3_7_5_5_15_15)
+move_foot_0(GP_17_15)
+move_foot_1(GP_13_17)
+move_foot_2(GP_17_13)
+release_foot_2
+move_center_up
+move_center_up

@@ -14,8 +14,6 @@ from monkey_bot.signals import StateSignal
 from monkey_bot.robot_controller import ControlSignal
 from monkey_bot.simulation_config import InstanceSimulationCoordinator
 
-WIDTH, HEIGHT = 1000, 800
-
 class RotationMotor:
     def __init__(self, body, leg):
         self.motor = SimpleMotor(body, leg, 0)
@@ -25,7 +23,6 @@ class RotationMotor:
         self.last_angle = 0
         self.last_body_angle = 0
         self.log = None
-
 
     def enable_log(self):
         self.log = open("adjust_angle_data.txt", 'w')
@@ -138,7 +135,7 @@ class MonkeyBotSimulator:
 
     def initiate_saver(self, name=None):
         if name is None:
-            name = f"{self.simulation_name}.mp4"
+            name = f"videos/{self.simulation_name}.mp4"
         self.writer = imageio.get_writer(name, fps=self.sim_config.fps, codec='libx264',)
 
     def get_center_pos(self):
@@ -187,7 +184,7 @@ class MonkeyBotSimulator:
         return body, shape
 
     def _create_robot_body(self, init_center_pos, body_radius, body_mass):
-        robot_body = pymunk.Body(moment=9999)
+        robot_body = pymunk.Body(moment=999999)
         robot_body.position = init_center_pos
         body_shape = pymunk.Circle(robot_body, body_radius)
         body_shape.mass = body_mass

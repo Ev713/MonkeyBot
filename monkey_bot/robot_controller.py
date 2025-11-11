@@ -26,7 +26,7 @@ def grid_distance(p1:Tuple[int, int], p2:Tuple[int, int]):
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
 
 class Controller:
-    def __init__(self, coordinator:InstanceSimulationCoordinator,enable_transitional_links=True):
+    def __init__(self, coordinator:InstanceSimulationCoordinator, enable_transition_links=True):
         self.finished_plan = False
         self.plan = []
         self.coordinator = coordinator
@@ -42,7 +42,7 @@ class Controller:
         self.current_grid_center_position = coordinator.instance.init_center
 
         self.launch_instructions = {}
-        self.enable_transitional_links = enable_transitional_links
+        self.enable_transitional_links = enable_transition_links
 
 
     @property
@@ -249,19 +249,29 @@ class Controller:
         reverse_cliques = {gp: i for gp in self.coordinator.instance.gripping_points for i in cliques if
                            gp in cliques[i]}
 
-        # The core loop iterates over all combinations of 5 gripping points.
-        for init1, init2, p1, p2, p3 in itertools.combinations(self.coordinator.instance.gripping_points, 5):
-
-            # --- Trivial Prunings (Mandatory for physical/geometric validity) ---
-            if (init1 == p1 and init2 == p2 or ()) or init1 == init2 or p1 == p2 or p2 == p3 or p1 == p3:
-                continue
-
-            max_ext = self.coordinator.instance.max_extension
+        grip_points = self.coordinator.instance.gripping_points
+        center_grip_points = {}
+        center_radii = {}
+        for (p1, p2, p3) in itertools.combinations(grip_points, 3):
             center = self.get_grid_arbitrary_center(p1, p2, p3)
-
-            if center is None or grid_distance(init1, init2) > 2 * max_ext:
+            if center is None:
                 continue
-            # -------------------------------------------------------------------
+            r = max([grid_distance(center, p) for p in (p1, p2, p3)])
+            if center in center_grip_points:
+                if r >= center_radii[center]:
+                    continue
+            center_radii[center] = r
+            center_grip_points[center] = (p1, p2, p3)
+
+        for (init1, init2), center in itertools.product(itertools.combinations(grip_points, 2), center_grip_points.keys()):
+
+            p1, p2, p3 = center_grip_points[center]
+            if init1 in (p1, p2, p3) and init2 in (p1, p2, p3):
+                continue
+            max_ext = self.coordinator.instance.max_extension
+            point_pairs_dists = [grid_distance(init1, init2), grid_distance(p1, p2), grid_distance(p2, p3), grid_distance(p3, p1)]
+            if any(d > 2 * max_ext for d in point_pairs_dists):
+                continue
 
             # Pruning #1: Trivial Jump Elimination
             if prune_short_jumps:
@@ -281,6 +291,7 @@ class Controller:
                 config_key = (init1, init2, reachable)
                 if config_key in seen_configs:
                     continue
+
 
             init1_screen = self.coordinator.grid_to_screen(*init1)
             init2_screen = self.coordinator.grid_to_screen(*init2)
@@ -302,7 +313,7 @@ class Controller:
 
     def get_all_catchable_gripping_points(self, center_point):
         return [gp for gp in self.coordinator.instance.gripping_points if
-                0 < math.hypot(center_point[0] - gp[0], center_point[1] - gp[1]) < self.coordinator.instance.max_extension]
+                0 < math.hypot(center_point[0] - gp[0], center_point[1] - gp[1]) <= self.coordinator.instance.max_extension]
 
     def hash_jump_params(self, from_1, from_2, center):
         return tuple((round(k[0]), round(k[1])) for k in [from_1, from_2,center])
@@ -334,6 +345,7 @@ class Controller:
             max_extension=self.coordinator.max_extension,
             min_extension=self.coordinator.min_extension,
             max_take_off_speed=self.coordinator.max_jump_speed,
+            max_average_distance=self.coordinator.max_jump_dist()
         )
 
         start_point, takeoff_vector = jump_validator.suggest_trajectory()
@@ -411,11 +423,11 @@ class Controller:
 
 
 class ManualController(Controller):
-    def __init__(self, coordinator, enable_transitional_links=True):
-        Controller.__init__(self, coordinator, enable_transitional_links=enable_transitional_links)
+    def __init__(self, coordinator, enable_transition_links=True):
+        Controller.__init__(self, coordinator, enable_transition_links=enable_transition_links)
         self.actions = None
         transition_links =[]
-        if enable_transitional_links:
+        if enable_transition_links:
             transition_links = self.get_transition_links()
         logging.info(f"Found {len(transition_links)}: transition edges")
         self.problem = get_problem(self.coordinator.instance, transition_links)

@@ -58,9 +58,10 @@ class Launcher:
     max_extension: float
     min_extension: float
     trajectory_fps: int = 20
-    minimum_runway_length:float = 100
-    minimum_catch_window_length:float = 100
+    minimum_runway_length:float = 10
+    minimum_catch_window_length:float = 10
     max_take_off_speed:float = 1000
+    max_average_distance:float = None
 
     def approximate_trajectory(self, start_point, takeoff_vector, number_of_points = 9999):
         trajectory = [start_point]
@@ -89,6 +90,7 @@ class Launcher:
         runway_length = len(self.get_runway(trajectory))
         is_valid = runway_length > self.minimum_runway_length/self.check_every_n_frames
         return is_valid
+
 
     def catch_window_is_long_enough(self, trajectory):
         catch_window_length = len(self.get_catch_window(trajectory))
@@ -127,6 +129,20 @@ class Launcher:
                 return False
         return True
 
+    def jump_is_too_long(self):
+        if self.max_average_distance is None:
+            return True
+        average_init = Vec2d(0, 0)
+        for p in self.init_jump_leg_points:
+            average_init += p
+        average_init/=len(self.init_jump_leg_points)
+        average_catch = Vec2d(0, 0)
+        for p in self.catch_points:
+            average_catch += p
+        average_catch/=len(self.catch_points)
+        return (average_init-average_catch).length > self.max_average_distance
+
+
     def take_off_is_slow_enough(self, takeoff_vector):
         return takeoff_vector.length < self.max_take_off_speed
 
@@ -139,6 +155,8 @@ class GeometricLauncher(Launcher):
     up_bias:float=0.5
 
     def suggest_trajectory(self):
+        if self.max_average_distance is not None and self.jump_is_too_long():
+            return None, None
         start = self.choose_start()
         if start is None:
             return None, None

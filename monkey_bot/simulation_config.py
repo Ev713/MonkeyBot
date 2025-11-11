@@ -35,6 +35,7 @@ class RobotConfig:
     leg_thickness:float = 0.01
     body_radius:float = 0.1
     max_takeoff_speed:float = 10
+    max_jump_dist: float = 3
     prune_short_jumps:bool=True,
     prune_in_clique_jumps:bool=True,
     prune_similar_jumps:bool=True,
@@ -65,6 +66,9 @@ class InstanceSimulationCoordinator:
     @property
     def cell_size(self):
         return self.sim_config.cell_size
+
+    def max_jump_dist(self):
+        return self.robot_config.max_jump_dist*self.cell_size
 
     def gp_name_to_screen_point(self, gp_name):
         gp_x = int(gp_name.split('_')[1])
