@@ -5,13 +5,13 @@ from unified_planning.shortcuts import OneshotPlanner
 # --- Assuming necessary imports from your project ---
 from monkey_bot.robot_controller import Controller
 from monkey_bot.simulation_config import InstanceSimulationCoordinator, SimConfig, RobotConfig
-from monkey_bot.upf_solver import get_problem, solve_problem
+from monkey_bot.upf_solver import get_problem, solve_problem, solve_problem_with_results
 from monkey_bot.monkey_bot_problem_instance import load_instance
 from pathlib import Path
 import time
 from typing import Tuple, Any, Dict
 
-
+TIMEOUT = 600
 # Helper: Default simulation configuration (matching values found in test_sim_runner.py)
 def get_default_sim_robot_configs(instance):
     sim_config = SimConfig(
@@ -85,7 +85,7 @@ def analyze_pruning_combinations(instance_name: str, instances_folder: str = "in
         problem = get_problem(instance, viable_jumps_unique)
 
         solving_start_time = time.perf_counter()
-        result = solve_problem(problem)
+        result = solve_problem_with_results(problem, timeout=TIMEOUT)
         solving_time = time.perf_counter() - solving_start_time
 
         planner_metrics = result.metrics if result.metrics else {}
@@ -120,13 +120,13 @@ def analyze_pruning_combinations(instance_name: str, instances_folder: str = "in
     metrics_file = f"{instance_name}_pruning_metrics.csv"
     print(f"\n--- Metrics Table for '{instance_name}' (Saved to {metrics_file}) ---")
     print(df_metrics.to_markdown(numalign="left", stralign="left"))
-    df_metrics.to_csv(metrics_file)
+    #df_metrics.to_csv(metrics_file)
 
     # 2. Pruning/Time Table
     time_file = f"{instance_name}_transition_time.csv"
     print(f"\n--- Transition Generation Time Table (Saved to {time_file}) ---")
     print(df_pruning.to_markdown(numalign="left", stralign="left"))
-    df_pruning.to_csv(time_file)
+    #df_pruning.to_csv(time_file)
 
     return df_metrics, df_pruning
 # Example Usage (Run this in your environment after making the file changes):

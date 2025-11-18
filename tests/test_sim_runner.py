@@ -70,24 +70,35 @@ def append_to_csv(df, filename):
 
 def test_pruning():
     """Main function to run the analysis and handle I/O."""
-    SUCCESS_FILE = "pruning_analysis_results.csv"
+    METRICS_SUCCESS_FILE = "metrics_analysis_results.csv"
+    PRUNING_SUCCESS_FILE = "pruning_analysis_results.csv"
     ERROR_FILE = "pruning_analysis_errors.csv"
 
     instances = [
-        "Random1",
-        "Random2",
-        "random_19",
-        "random_22",
-        "random_24",
-        "random_28",
-        "random_38",
-        "random_55",  # This instance will fail in the placeholder function
-        "random_1981",
-        "random_2550",
-        "random_2630",
-        "random_4588",
-        "random_5338",
-        "random_8525",
+        #"Random1",
+        #"random_19",
+        #"random_22",
+        "inst_10_4036",
+        "inst_11_3774",
+        "inst_14_937",
+        "inst_15_3576",
+        "inst_18_9006",
+        "inst_19_4685",
+        "inst_20_1085",
+        "inst_21_2145",
+        "inst_23_4412",
+        "inst_25_6904",
+        "inst_27_2945",
+
+#        "random_24",
+#        "random_28",
+#        "random_38",
+#        "random_1981",
+#        "random_2550",
+#        "random_2630",
+#        "random_4588",
+#        "random_5338",
+#        "random_8525",
     ]
 
     print(f"Starting analysis for {len(instances)} instances...")
@@ -101,14 +112,21 @@ def test_pruning():
             # but for logging to a single CSV, they should be merged
             # or returned as a single combined DF.
             # I have modified the placeholder to return a single combined DF:
-            df_result = analyze_pruning_combinations(inst_name, "instances")
+            df_metrics, df_pruning = analyze_pruning_combinations(inst_name, "instances")
 
             # --- SUCCESS HANDLING ---
-            print("Run successful. Merged Data:")
-            print(df_result.to_string(index=False))  # Display the result
+            print("Run successful.")
+            #print(df_metrics.to_string(index=False))  # Display the result
 
             # Add results to the success file
-            append_to_csv(df_result, SUCCESS_FILE)
+            append_to_csv(df_metrics, METRICS_SUCCESS_FILE)
+
+            # --- SUCCESS HANDLING ---
+            #print("Run successful. Merged Data:")
+            #print(df_pruning.to_string(index=False))  # Display the result
+
+            # Add results to the success file
+            append_to_csv(df_pruning, PRUNING_SUCCESS_FILE)
 
         except Exception as e:
             # --- ERROR HANDLING ---
@@ -142,12 +160,13 @@ def test_complex_actions_problem(manual=False):
 
 
 if __name__ == "__main__":
+    test_pruning()
     #test_angle_adjuster()
     #test_jump_procedure_sequence()
     #test_simple_climbing()
-    test_complex_actions_problem()
+    #test_complex_actions_problem()
     #
-    df_metrics, df_pruning = analyze_pruning_combinations("Mixed", "instances")
+    #df_metrics, df_pruning = analyze_pruning_combinations("Mixed", "instances")
 #    print("--- Metrics Table ---")
 #    print(df_metrics)
 #    print("\n--- Pruning & Transition Time ---")
