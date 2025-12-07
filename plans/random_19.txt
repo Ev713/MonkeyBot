@@ -1,10 +1,5 @@
-use_tran(tran_1_1_1_3_13_14)
-move_foot_1(GP_13_17)
-move_foot_2(GP_13_15)
-move_foot_0(GP_13_13)
-release_foot_2
-move_center_up
-move_center_up
-move_foot_2(GP_13_15)
-release_foot_0
-move_center_left
+release__1__1_1_3_1_1_3
+use_tran(tran_3_1_1_3_3_9_3_15_1_11)
+release__2__3_9_3_15_1_11
+use_tran(tran_3_9_1_11_13_13_13_17_13_15)
+release__3__13_13_13_17_13_15

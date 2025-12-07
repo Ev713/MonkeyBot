@@ -15,18 +15,18 @@ from monkey_bot import upf_solver
 from monkey_bot.action import parse_action, Action
 import monkey_bot.upf_solver
 from monkey_bot.procedure import MoveCenter, ReleaseGrip, Mixed, Tracker, Grabber, AdjustLength, DynamicCatch, \
-    MultiOptionalDynamicCatch, ReleaseAtPoint
+    MultiOptionalDynamicCatch, ReleaseAtPoint, GetCloser
 from monkey_bot.signals import ControlSignal, StateSignal
-from monkey_bot.simulation_config import InstanceSimulationCoordinator
+from monkey_bot.config import InstanceSimulationConfig
 from monkey_bot.trajectory_finder import Launcher, GeometricLauncher
-from monkey_bot.upf_solver import get_problem, solve_problem
+from monkey_bot.upf_solver import get_problem, solve_problem, get_simplified_problem
 from tests.test_upf_side import simulate
 
 def grid_distance(p1:Tuple[int, int], p2:Tuple[int, int]):
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
 
 class Controller:
-    def __init__(self, coordinator:InstanceSimulationCoordinator, enable_transition_links=True):
+    def __init__(self, coordinator:InstanceSimulationConfig, enable_transition_links=True):
         self.finished_plan = False
         self.plan = []
         self.coordinator = coordinator
@@ -213,29 +213,83 @@ class Controller:
 
         self.proc_id = 0
 
-    def update_current_center(self, action: Action):
-        if "move_center"  in action.name:
-            delta = self.get_center_grid_delta(action.name)
-            self.current_grid_center_position = self.current_grid_center_position[0] + delta[0], \
-                                                self.current_grid_center_position[1] + delta[1]
-        if "tran" in action.name:
-            _, _, _, _, _, new_x, new_y = action.args[0].split('_')
-            self.current_grid_center_position = int(new_x), int(new_y)
+    def setup_attach_for_simplified_problem_procedure_sequence(self, current_action:Action):
+        goal_point_str = current_action.name.split('__')[2].split('_')
+        goal_point = int(goal_point_str[0]), int(goal_point_str[1])
+        goal_point = self.coordinator.grid_to_screen(*goal_point)
+        limb_id = int(current_action.name.split('__')[1])-1
+        self.procedures = []
 
-    def read_transition_links(self, filepath):
-        for l in open(filepath).readlines():
-            key, start, vec = ast.literal_eval(l)
-            start = Vec2d(*start)
-            vec = Vec2d(*vec)
-            self.launch_instructions[key] = start, vec
-        return self.launch_instructions.keys()
+        self.procedures.append(ReleaseGrip(limb_id, self.coordinator))
+        catcher = Mixed([GetCloser(goal_point, self.coordinator),
+                            Tracker(limb_id, goal_point, self.coordinator),
+                        Grabber(limb_id, goal_point, self.coordinator)], self.coordinator)
+        self.procedures.append(catcher)
 
-    def save_transition_links(self, filepath):
-        file = open(filepath, "w")
-        for key, (start, vec) in self.launch_instructions.items():
-            file.write(f"{key}, {tuple(float(x) for x in start)}, {tuple(float(x) for x in vec)}\n")
+        self.proc_id = 0
 
-    def get_transition_links(self, filepath=None):
+
+    def setup_jump_for_simplified_problem_procedure_sequence(self, current_action:Action, state_info:StateSignal):
+        init1_x, init1_y, init2_x, init2_y, p1x, p1y, p2x, p2y, p3x, p3y = [int(x) for x in current_action.args[0].split('_') if x.isnumeric()]
+        p1, p2, p3 = (p1x, p1y), (p2x, p2y), (p3x, p3y)
+        jumping_leg_1_pos = self.coordinator.grid_to_screen(init1_x, init1_y)
+        jumping_leg_2_pos = self.coordinator.grid_to_screen(init2_x, init2_y)
+
+        # Finding legs that are "close" - closer then cellsize/3 (3 is arbitrary)
+        jumping_leg_1_id = [i for i in range(self.coordinator.num_legs) if
+                            (state_info.feet_pos[i] - jumping_leg_1_pos).length<self.coordinator.cell_size/3][0]
+        jumping_leg_2_id = [i for i in range(self.coordinator.num_legs) if
+                            (state_info.feet_pos[i] - jumping_leg_2_pos).length<self.coordinator.cell_size/3][0]
+
+        ignore_legs = [leg_id for leg_id in range(self.coordinator.num_legs)
+                       if leg_id not in (jumping_leg_1_id, jumping_leg_2_id)]
+
+        key = self.hash_jump_params((init1_x, init1_y), (init2_x, init2_y), self.get_grid_arbitrary_center(p1, p2, p3))
+
+        assert key in self.launch_instructions
+        starting_point, jumping_vector = self.launch_instructions[key]
+        self.procedures = []
+        take_off_point = starting_point
+        while (state_info.feet_pos[jumping_leg_1_id] - take_off_point).length < self.coordinator.max_extension \
+                and (state_info.feet_pos[jumping_leg_2_id] - take_off_point).length < self.coordinator.max_extension:
+            take_off_point += self.coordinator.dt * jumping_vector
+        take_off_point -= self.coordinator.dt * jumping_vector*5
+
+        releasers = []
+        for i in ignore_legs:
+            releasers.append(ReleaseGrip(i, self.coordinator))
+
+        self.procedures.append(Mixed(releasers, self.coordinator))
+        retractors = []
+        for i in ignore_legs:
+            retractors.append(AdjustLength(i, self.coordinator.min_extension, self.coordinator))
+        self.procedures.append(Mixed(retractors, self.coordinator))
+
+        on_position = MoveCenter(tuple(starting_point), self.coordinator, ignore_legs)
+        self.procedures.append(on_position)
+        launch = Mixed([MoveCenter(take_off_point, self.coordinator, ignore_legs),
+                        ReleaseAtPoint(50, take_off_point, self.coordinator)], self.coordinator, finish_at_any=True)
+        launch.move_center_speed = jumping_vector.length
+        self.procedures.append(launch)
+        screen_catch_points = tuple(self.coordinator.grid_to_screen(*p) for p in (p1, p2, p3))
+        catcher = DynamicCatch(screen_catch_points, state_info, self.coordinator)
+        self.procedures.append(catcher)
+
+        self.proc_id = 0
+
+    def setup_release_for_simplified_problem_procedure_sequence(self, current_action:Action):
+        limb_id = int(current_action.name.split('__')[1])-1
+        self.procedures = []
+
+        releaser = ReleaseGrip(limb_id, self.coordinator)
+
+        self.procedures.append(releaser)
+        #retractor = AdjustLength(limb_id, self.coordinator.min_extension, self.coordinator)
+        #self.procedures.append(retractor)
+        self.proc_id = 0
+
+
+    def get_transition_links(self, filepath=None, for_simplified_problem=True):
         if not filepath is None:
             return self.read_transition_links(filepath)
         # Reset launch instructions for a clean run
@@ -307,7 +361,110 @@ class Controller:
                     seen_configs.add(config_key)  # Record the new unique configuration
 
                 self.launch_instructions[key] = launch
-                transition_links.append((init1, init2, center))
+                if for_simplified_problem:
+                    transition_links.append((init1, init2, (p1, p2, p3)))
+                else:
+                    transition_links.append((init1, init2, center))
+        transition_links = set(transition_links)
+        return transition_links
+
+    def update_current_center(self, action: Action):
+        if "move_center"  in action.name:
+            delta = self.get_center_grid_delta(action.name)
+            self.current_grid_center_position = self.current_grid_center_position[0] + delta[0], \
+                                                self.current_grid_center_position[1] + delta[1]
+        if "tran" in action.name:
+            _, _, _, _, _, new_x, new_y = action.args[0].split('_')
+            self.current_grid_center_position = int(new_x), int(new_y)
+
+    def read_transition_links(self, filepath):
+        for l in open(filepath).readlines():
+            key, start, vec = ast.literal_eval(l)
+            start = Vec2d(*start)
+            vec = Vec2d(*vec)
+            self.launch_instructions[key] = start, vec
+        return self.launch_instructions.keys()
+
+    def save_transition_links(self, filepath):
+        file = open(filepath, "w")
+        for key, (start, vec) in self.launch_instructions.items():
+            file.write(f"{key}, {tuple(float(x) for x in start)}, {tuple(float(x) for x in vec)}\n")
+
+    def get_transition_links(self, filepath=None, for_simplified_problem=False):
+        if not filepath is None:
+            return self.read_transition_links(filepath)
+        # Reset launch instructions for a clean run
+        prune_short_jumps = self.coordinator.robot_config.prune_short_jumps
+        prune_in_clique_jumps = self.coordinator.robot_config.prune_in_clique_jumps
+        prune_similar_jumps = self.coordinator.robot_config.prune_similar_jumps
+        self.launch_instructions = {}
+        transition_links = []
+        seen_configs = set()
+        cliques = self.find_cliques()
+        reverse_cliques = {gp: i for gp in self.coordinator.instance.gripping_points for i in cliques if
+                           gp in cliques[i]}
+
+        grip_points = self.coordinator.instance.gripping_points
+        center_grip_points = {}
+        center_radii = {}
+        for (p1, p2, p3) in itertools.combinations(grip_points, 3):
+            center = self.get_grid_arbitrary_center(p1, p2, p3)
+            if center is None:
+                continue
+            r = max([grid_distance(center, p) for p in (p1, p2, p3)])
+            if center in center_grip_points:
+                if r >= center_radii[center]:
+                    continue
+            center_radii[center] = r
+            center_grip_points[center] = (p1, p2, p3)
+
+        for (init1, init2), center in itertools.product(itertools.combinations(grip_points, 2), center_grip_points.keys()):
+
+            p1, p2, p3 = center_grip_points[center]
+            if init1 in (p1, p2, p3) and init2 in (p1, p2, p3):
+                continue
+            max_ext = self.coordinator.instance.max_extension
+            point_pairs_dists = [grid_distance(init1, init2), grid_distance(p1, p2), grid_distance(p2, p3), grid_distance(p3, p1)]
+            if any(d > 2 * max_ext for d in point_pairs_dists):
+                continue
+
+            # Pruning #1: Trivial Jump Elimination
+            if prune_short_jumps:
+                if (grid_distance(center, init1) <= max_ext and
+                        grid_distance(center, init2) <= max_ext):
+                    continue
+
+            # Pruning #2: Clique/Component Check
+            if prune_in_clique_jumps:
+                if all(reverse_cliques[p] == reverse_cliques[init1] for p in [init2, p1, p2, p3]):
+                    continue
+
+            # Pruning #3: Duplicate Configuration Check (avoids expensive geometric check)
+            config_key = None
+            if prune_similar_jumps:
+                reachable = frozenset(self.get_all_catchable_gripping_points(center))
+                config_key = (init1, init2, reachable)
+                if config_key in seen_configs:
+                    continue
+
+            init1_screen = self.coordinator.grid_to_screen(*init1)
+            init2_screen = self.coordinator.grid_to_screen(*init2)
+            p1_screen = self.coordinator.grid_to_screen(*p1)
+            p2_screen = self.coordinator.grid_to_screen(*p2)
+            p3_screen = self.coordinator.grid_to_screen(*p3)
+
+            key = self.hash_jump_params(init1, init2, center)
+            launch = self.check_jump_is_possible(init1_screen, init2_screen, p1_screen, p2_screen, p3_screen)
+
+            if launch:
+                if prune_similar_jumps:
+                    seen_configs.add(config_key)  # Record the new unique configuration
+
+                self.launch_instructions[key] = launch
+                if for_simplified_problem:
+                    transition_links.append((init1, init2, (p1, p2, p3)))
+                else:
+                    transition_links.append((init1, init2, center))
         transition_links = set(transition_links)
         return transition_links
 
@@ -500,3 +657,79 @@ class ManualController(Controller):
 
     def finish_action(self):
         return
+
+class SimplifiedProblemController(Controller):
+    def __init__(self, coordinator, enable_transition_links=True):
+        Controller.__init__(self, coordinator, enable_transition_links=enable_transition_links)
+
+    def get_sig(self, state_info:StateSignal):
+        if self.actions_finished == 0 and not self.procedures:
+            print(f"Starting action {self.plan[self.actions_finished]}")
+        sig = self.get_empty_sig()
+        if self.actions_finished == len(self.plan):
+            return sig
+
+        if not self.procedures:
+            current_action = self.get_current_action()
+            if current_action is None:
+                self.setup_finishing_move_center_to_goal()
+                self.finished_plan = True
+                return sig
+            elif "attach" in current_action.name:
+                self.setup_attach_for_simplified_problem_procedure_sequence(current_action)
+            elif "tran" in current_action.name:
+                self.setup_jump_for_simplified_problem_procedure_sequence(current_action, state_info)
+            elif "release" in current_action.name:
+                self.setup_release_for_simplified_problem_procedure_sequence(current_action)
+            elif "finish" in current_action.name:
+                self.setup_finishing_move_center_to_goal()
+            else:
+                raise Exception(f"Unknown action {current_action.name}")
+            if self.procedures is not None:
+                print(f"Starting new procedure {self.procedures[self.proc_id]}")
+        p = self.procedures[self.proc_id]
+
+        if p.is_finished(state_info):
+            self.proc_id += 1
+            if self.proc_id == len(self.procedures):
+                self.finish_action()
+                self.procedures = None
+            if self.procedures is not None:
+                print(f"Starting new procedure {self.procedures[self.proc_id]}")
+        return p.adjust_signal(sig, state_info)
+
+    def create_plan(self, plan_path=None, transition_links_path=None):
+        transition_links = []
+        if self.enable_transitional_links:
+            transition_links = self.get_transition_links(for_simplified_problem=True)
+            logging.info(f"Found {len(transition_links)} transition links")
+        problem = get_simplified_problem(self.coordinator.instance, transition_links)
+        start = time.perf_counter()
+        logging.info("Started solving the problem")
+        plan = solve_problem(problem)
+        logging.info(f"Finished solving the problem. Took {time.perf_counter() - start} seconds")
+        if plan is None:
+            raise ValueError("Planning problem is unsolvable")
+        if plan_path:
+            self.save_plan(plan, plan_path)
+        if transition_links_path:
+            self.save_transition_links(transition_links_path)
+        self.plan = [parse_action(a) for a in plan.actions]
+
+    def finish_action(self):
+        print(f"Finished Action: {self.plan[self.actions_finished]}")
+        self.actions_finished+=1
+        if len(self.plan)>self.actions_finished:
+            print(f"Starting action {self.plan[self.actions_finished]}")
+        else:
+            if "finish" in self.plan[-1].name:
+                self.finished_plan =True
+                print(f"Goal achieved")
+            else:
+                self.plan += [parse_action('finish')]
+
+    def setup_finishing_move_center_to_goal(self):
+        goal_point = self.coordinator.screen_goal_point()
+        self.procedures = [MoveCenter(goal_point, self.coordinator)]
+        self.proc_id = 0
+

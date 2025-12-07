@@ -1,12 +1,18 @@
 import itertools
 import math
 from typing import Tuple
+import smallestenclosingcircle
 
 from pygame.examples.stars import move_stars
 from unified_planning.shortcuts import *
 from monkey_bot.monkey_bot_problem_instance import MonkeyBotProblemInstance
 
 LEG_MIN_EXT = 0.25
+
+def tuple_to_str(tup, sep='_'):
+    if tup is None:
+        return 'None'
+    return sep.join([str(a) for a in tup])
 
 def dist_prec(x1, y1, x2, y2, val):
     return LE(get_dist_squard_fluent(x1,y1,x2,y2), Times(val, val))
@@ -67,8 +73,170 @@ def leg_order_precondition(center_x, center_y, legs_x:List, legs_y:List):
             at_most_one = Or(at_most_one, all_except_i)
     return at_most_one
 
+def simplified_problem_is_state_precondition(feet, s, dettached):
+    prec = None
+    for i, foot_pos in enumerate(feet):
+        target = dettached if s[i] is None else s[i]
+        new_prec = And(Equals(feet[i][0], target[0]), Equals(feet[i][1], target[1]))
+        if prec is None:
+            prec = new_prec
+        else:
+            prec = And(prec, new_prec)
+    return prec
 
-def get_problem(instance: MonkeyBotProblemInstance, viable_jumps=None):
+def get_simplified_problem(instance:MonkeyBotProblemInstance, transition_links):
+    leg_extension = instance.max_extension
+    dettached_pos = (-instance.max_extension, -instance.max_extension)
+    n = len(instance.init_feet)
+    k = 2
+
+    problem = Problem()
+
+    gp_is_close_enough  = {
+        p: (p[0] - instance.goal_point[0])**2 + (p[1] - instance.goal_point[1])**2 <= leg_extension**2
+        for p in instance.gripping_points
+    }
+    foot_is_close_enough = []
+    feet_pos = []
+    for f_i in range(n):
+        foot_x = Fluent(f"foot_{f_i+1}_x", IntType())
+        foot_y = Fluent(f"foot_{f_i+1}_y", IntType())
+        foot_is_close_enough.append(Fluent(f"foot_{f_i+1}_is_close_enough", BoolType()))
+        feet_pos.append((foot_x, foot_y))
+        problem.add_fluent(foot_x)
+        problem.add_fluent(foot_y)
+        problem.add_fluent(foot_is_close_enough[f_i])
+
+    valid_sizes = range(k, n+1)
+    valid_configs = []
+    for s in valid_sizes:
+        for c in itertools.combinations(instance.gripping_points, s):
+            _,_,r = smallestenclosingcircle.make_circle(c)
+            if r <= leg_extension:
+                valid_configs.append(set(c))
+
+    valid_states = {}
+
+    for cfg in valid_configs:
+        cfg_list = list(cfg)
+        for perm in itertools.permutations(cfg_list):
+            for assignment_positions in itertools.combinations(range(n), len(cfg_list)):
+                vec = [None] * n
+                for slot, gp in zip(assignment_positions, perm):
+                    vec[slot] = gp
+                valid_states[tuple(vec)] = cfg
+
+    state_str = {}
+    for s in valid_states:
+        coords_str = []
+        for c in s:
+            coords_str.append(tuple_to_str(c))
+        state_str[s] = tuple_to_str(coords_str)
+    for s in valid_states:
+        cfg = valid_states[s]
+        if len(cfg) > k:
+            for i in range(n):
+                release = InstantaneousAction(f'release__{i+1}__{state_str[s]}')
+                release.add_precondition(simplified_problem_is_state_precondition(feet_pos, s, dettached_pos))
+                release.add_effect(foot_is_close_enough[i], True)
+                release.add_effect(feet_pos[i][0], dettached_pos[0])
+                release.add_effect(feet_pos[i][1], dettached_pos[1])
+                problem.add_action(release)
+        if len(cfg) < n:
+            for p in instance.gripping_points:
+                for i in range(n):
+                    if not cfg|{p} in valid_configs:
+                        continue
+                    if s[i] is not None:
+                        continue
+                    attach = InstantaneousAction(f'attach__{i+1}__{tuple_to_str(p)}__{state_str[s]}')
+                    attach.add_precondition(simplified_problem_is_state_precondition(feet_pos, s, dettached_pos))
+                    attach.add_effect(feet_pos[i][0], p[0])
+                    attach.add_effect(feet_pos[i][1], p[1])
+                    attach.add_effect(foot_is_close_enough[i], gp_is_close_enough[p])
+                    problem.add_action(attach)
+
+    for i, (init_foot_x, init_foot_y) in enumerate(instance.init_feet):
+        foot_x, foot_y = feet_pos[i]
+        problem.set_initial_value(foot_x, init_foot_x)
+        problem.set_initial_value(foot_y, init_foot_y)
+        problem.set_initial_value(foot_is_close_enough[i], gp_is_close_enough[(init_foot_x, init_foot_y)])
+
+    for ice in foot_is_close_enough:
+        problem.add_goal(ice)
+
+
+    if transition_links is not None:
+
+        TransitionLink = UserType("TransitionLink")
+
+        jumping_leg_1_x = Fluent("jumping_leg_1_x", IntType(), tran=TransitionLink)
+        jumping_leg_2_x = Fluent("jumping_leg_2_x", IntType(), tran=TransitionLink)
+        jumping_leg_1_y = Fluent("jumping_leg_1_y", IntType(), tran=TransitionLink)
+        jumping_leg_2_y = Fluent("jumping_leg_2_y", IntType(), tran=TransitionLink)
+
+        catch_leg = []
+        for i in range(n):
+            catch_leg_x = Fluent(f"catch_leg_{i+1}_x", IntType(), tran=TransitionLink)
+            catch_leg_y = Fluent(f"catch_leg_{i+1}_y", IntType(), tran=TransitionLink)
+            problem.add_fluent(catch_leg_x)
+            problem.add_fluent(catch_leg_y)
+
+            catch_leg.append((catch_leg_x, catch_leg_y))
+
+        jumping_legs = [(jumping_leg_1_x, jumping_leg_1_y), (jumping_leg_2_x, jumping_leg_2_y)]
+
+        problem.add_fluent(jumping_leg_1_x)
+        problem.add_fluent(jumping_leg_2_x)
+        problem.add_fluent(jumping_leg_1_y)
+        problem.add_fluent(jumping_leg_2_y)
+
+        use_tran = InstantaneousAction("use_tran", tran=TransitionLink)
+        tran = use_tran.parameter("tran")
+
+        foot_at_init = {}
+        for i, j in itertools.product(range(n), [0, 1]):
+            foot_x = feet_pos[i][0]
+            foot_y = feet_pos[i][1]
+            init_x = jumping_legs[j][0](tran)
+            init_y = jumping_legs[j][1](tran)
+
+            foot_at_init[i, j] = Equals(foot_x, init_x), Equals(foot_y, init_y)
+        feet_at_init = None
+        for i, j in itertools.product(range(n), range(n)):
+            if j == i:
+                continue
+            new_case = And(foot_at_init[i, 0], foot_at_init[j, 1])
+            if feet_at_init is None:
+                feet_at_init = new_case
+            else:
+                feet_at_init = Or(feet_at_init, new_case)
+
+        use_tran.add_precondition(feet_at_init)
+        for i, (new_x, new_y) in enumerate(catch_leg):
+            use_tran.add_effect(feet_pos[i][0], new_x(tran))
+            use_tran.add_effect(feet_pos[i][1], new_y(tran))
+        problem.add_action(use_tran)
+        for (init1_x, init1_y),(init2_x, init2_y), ((p1x, p1y), (p2x, p2y), (p3x, p3y)) in transition_links:
+
+            tran = Object(f"tran_{init1_x}_{init1_y}_{init2_x}_{init2_y}_{p1x}_{p1y}_{p2x}_{p2y}_{p3x}_{p3y}", TransitionLink)
+            problem.add_object(tran)
+
+            problem.set_initial_value(jumping_leg_1_x(tran), init1_x)
+            problem.set_initial_value(jumping_leg_2_x(tran), init2_x)
+            problem.set_initial_value(jumping_leg_1_y(tran), init1_y)
+            problem.set_initial_value(jumping_leg_2_y(tran), init2_y)
+
+            problem.set_initial_value(catch_leg[0][0](tran), p1x)
+            problem.set_initial_value(catch_leg[0][1](tran), p1y)
+            problem.set_initial_value(catch_leg[1][0](tran), p2x)
+            problem.set_initial_value(catch_leg[1][1](tran), p2y)
+            problem.set_initial_value(catch_leg[2][0](tran), p3x)
+            problem.set_initial_value(catch_leg[2][1](tran), p3y)
+    return problem
+
+
+def get_problem(instance: MonkeyBotProblemInstance, transition_links=None):
     leg_extension = instance.max_extension
     grid_size_x = instance.grid_size_x
     grid_size_y = instance.grid_size_y
@@ -188,7 +356,7 @@ def get_problem(instance: MonkeyBotProblemInstance, viable_jumps=None):
     problem.add_goal(Equals(center_x, goal_x))
     problem.add_goal(Equals(center_y, goal_y))
 
-    if viable_jumps is not None:
+    if transition_links is not None:
 
         TransitionLink = UserType("TransitionLink")
 
@@ -244,7 +412,7 @@ def get_problem(instance: MonkeyBotProblemInstance, viable_jumps=None):
         use_tran.add_effect(foot_2_y, non_deterministic_pos[1])
         use_tran.add_effect(foot_3_y, non_deterministic_pos[1])
         problem.add_action(use_tran)
-        for (init1_x, init1_y),(init2_x, init2_y), (c_x, c_y) in viable_jumps:
+        for (init1_x, init1_y),(init2_x, init2_y), (c_x, c_y) in transition_links:
 
             tran = Object(f"tran_{init1_x}_{init1_y}_{init2_x}_{init2_y}_{c_x}_{c_y}", TransitionLink)
             problem.add_object(tran)
@@ -265,7 +433,7 @@ from unified_planning.shortcuts import OneshotPlanner
 def solve_problem(problem, timeout=None):
     # Instead of returning just the plan, return the full result object
     with OneshotPlanner(name='enhsp') as planner:
-        result = planner.solve(problem, timout=timeout)
+        result = planner.solve(problem, timeout=timeout)
         return result.plan
 
 

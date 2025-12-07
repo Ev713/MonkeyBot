@@ -29,6 +29,7 @@ class RobotConfig:
     leg_mass:float
     leg_spring_stiffness:float
     leg_spring_damping:float
+    simplified_problem:bool
     min_extension:float=0.05
     angle_epsilon:float= 2*math.pi/24
     foot_radius:float = 0.01
@@ -42,7 +43,7 @@ class RobotConfig:
 
 
 
-class InstanceSimulationCoordinator:
+class InstanceSimulationConfig:
     def __init__(self, instance: MonkeyBotProblemInstance, sim_config: SimConfig, robot_config: RobotConfig):
         self.instance = instance
         self.sim_config = sim_config

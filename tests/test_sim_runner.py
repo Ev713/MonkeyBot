@@ -5,7 +5,7 @@ import traceback
 
 from monkey_bot.monkey_bot_problem_instance import load_instance
 from monkey_bot.sim_runner import SimRunner
-from monkey_bot.simulation_config import SimConfig, RobotConfig
+from monkey_bot.config import SimConfig, RobotConfig
 from pruning_analyzer import analyze_pruning_combinations
 
 INSTANCES_FOLDER = "instances"
@@ -27,14 +27,15 @@ robot_config = RobotConfig(
     body_radius=0.4,
     foot_mass=0.2,
     leg_mass=0.2,
+    simplified_problem=True,
     leg_spring_stiffness=500,
     leg_spring_damping=1.5,
     min_extension=0.2,
     max_takeoff_speed=20,
     max_jump_dist=15,
-    prune_short_jumps=False,
-    prune_in_clique_jumps=False,
-    prune_similar_jumps=False,
+    prune_short_jumps=True,
+    prune_in_clique_jumps=True,
+    prune_similar_jumps=True,
 )
 
 def test_simple_climbing():
@@ -151,7 +152,7 @@ def test_pruning():
     print("Analysis complete.")
 
 def test_complex_actions_problem(manual=False):
-    instance = load_instance("random_2550", INSTANCES_FOLDER)
+    instance = load_instance("random_19", INSTANCES_FOLDER)
     sim_runner = SimRunner(instance, sim_config=sim_config, robot_config=robot_config)
     if manual:
         sim_runner.execute_manual_simulation(save=True)
@@ -160,11 +161,11 @@ def test_complex_actions_problem(manual=False):
 
 
 if __name__ == "__main__":
-    test_pruning()
+    #test_pruning()
     #test_angle_adjuster()
     #test_jump_procedure_sequence()
     #test_simple_climbing()
-    #test_complex_actions_problem()
+    test_complex_actions_problem()
     #
     #df_metrics, df_pruning = analyze_pruning_combinations("Mixed", "instances")
 #    print("--- Metrics Table ---")

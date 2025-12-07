@@ -4,11 +4,11 @@ from typing import List
 from pymunk import Vec2d
 
 from monkey_bot.signals import StateSignal, ControlSignal
-from monkey_bot.simulation_config import InstanceSimulationCoordinator
+from monkey_bot.config import InstanceSimulationConfig
 
 
 class Procedure:
-    def __init__(self, coordinator: InstanceSimulationCoordinator):
+    def __init__(self, coordinator: InstanceSimulationConfig):
         self.epsilon = coordinator.epsilon
         self.rotation_speed = coordinator.rotation_speed
         self.extension_speed = coordinator.extension_speed
@@ -25,8 +25,23 @@ class Procedure:
     def is_finished(self, state_info:StateSignal):
         pass
 
+class GetCloser(Procedure):
+    def __init__(self, target_point, coordinator: InstanceSimulationConfig):
+        super().__init__(coordinator)
+        self.target_point = target_point
+        self.move_center = MoveCenter(None, coordinator)
+
+    def is_finished(self, state_info:StateSignal):
+        return True
+
+    def adjust_signal(self, signal: ControlSignal, state_info):
+        if (state_info.center_pos - self.target_point).length>self.max_extension*0.5:
+            self.move_center.goal_point = (state_info.center_pos + self.target_point)/2
+            signal = self.move_center.adjust_signal(signal, state_info)
+        return signal
+
 class AdjustLength(Procedure):
-    def __init__(self, limb_id, goal_extension, coordinator:InstanceSimulationCoordinator, custom_speed=None):
+    def __init__(self, limb_id, goal_extension, coordinator:InstanceSimulationConfig, custom_speed=None):
         super().__init__(coordinator)
         self.limb_id = limb_id
         self.goal_extension = goal_extension
@@ -59,7 +74,7 @@ class ReleaseGrip(Procedure):
 
 
 class AdjustAngle(Procedure):
-    def __init__(self, limb_id, target_point: Vec2d,coordinator: InstanceSimulationCoordinator):
+    def __init__(self, limb_id, target_point: Vec2d, coordinator: InstanceSimulationConfig):
         super().__init__(coordinator)
         self.limb_id = limb_id
         self.target_point = target_point
@@ -67,7 +82,9 @@ class AdjustAngle(Procedure):
     def adjust_signal(self, signal: ControlSignal, state_info):
         if self.rotation_speed is None:
             raise Exception("Rotation speed unfilled")
-
+        active_grips = [g for g in state_info.active_grips if g]
+        if len(active_grips)==1:
+            return signal
         d = self.curr_angle_difference(state_info)
         sign = -1 if d > 0 else 1
         signal.rotation[self.limb_id] = sign*self.rotation_speed
@@ -85,7 +102,7 @@ class AdjustAngle(Procedure):
         return abs(self.curr_angle_difference(state_info)) <= self.epsilon
 
 class SmoothAdjustAngle(AdjustAngle):
-    def __init__(self, limb_id, target_point: Vec2d,coordinator: InstanceSimulationCoordinator, acceleration_rate=1):
+    def __init__(self, limb_id, target_point: Vec2d, coordinator: InstanceSimulationConfig, acceleration_rate=1):
         super().__init__(limb_id, target_point, coordinator)
         self.prev_abs_rate = 0
         self.acceleration_rate = acceleration_rate
@@ -113,7 +130,7 @@ class SmoothAdjustAngle(AdjustAngle):
         return signal
 
 class MultiOptionalDynamicCatch(Procedure):
-    def __init__(self, admissable_catch_points, state_info:StateSignal, coordinator:InstanceSimulationCoordinator):
+    def __init__(self, admissable_catch_points, state_info:StateSignal, coordinator:InstanceSimulationConfig):
         super().__init__(coordinator)
         self.admissable_catch_points = admissable_catch_points
         self.chosen_catch_points = []
@@ -155,7 +172,7 @@ class MultiOptionalDynamicCatch(Procedure):
         return self.chosen_catch_points
 
 class DynamicCatch(Procedure):
-    def __init__(self, target_points, state ,coordinator: InstanceSimulationCoordinator):
+    def __init__(self, target_points, state, coordinator: InstanceSimulationConfig):
         super().__init__(coordinator)
         self.target_points = target_points
         self.trackers = []
@@ -163,6 +180,7 @@ class DynamicCatch(Procedure):
         self.grabbers = []
         self.move_center = MoveCenter(None, coordinator)
         self.finished_legs = None
+        self.get_closer = GetCloser(None, coordinator)
 
         for limb_id in range(self.num_legs):
             if target_points[limb_id] is None:
@@ -197,8 +215,10 @@ class DynamicCatch(Procedure):
             signal = grabber.adjust_signal(signal, state_info)
             if not grabber.is_finished(state_info):
                 signal = tracker.adjust_signal(signal, state_info)
-        #if len(self.finished_legs) > 1:
-        #    signal = self.adjust_signal_to_move_center_closer_to_closest_points(signal, state_info)
+        if len(self.finished_legs) > 0:
+            p = self.get_closest_free_point(state_info)
+            self.get_closer.target_point = p
+            signal = self.get_closer.adjust_signal(signal, state_info)
 
         return signal
 
@@ -227,7 +247,7 @@ class DynamicCatch(Procedure):
         self.finished_legs = [tracker.limb_id for grabber, tracker in zip(self.grabbers, self.trackers) if grabber.is_finished(state_info)]
 
 class Grabber(Procedure):
-    def __init__(self, limb_id, target_point: Vec2d, coordinator: InstanceSimulationCoordinator):
+    def __init__(self, limb_id, target_point: Vec2d, coordinator: InstanceSimulationConfig):
         super().__init__(coordinator)
         self.limb_id = limb_id
         self.target_point = target_point
@@ -242,7 +262,7 @@ class Grabber(Procedure):
         return state_info.active_grips[self.limb_id] == 1
 
 class ReleaseAtPoint(Procedure):
-    def __init__(self, tolerance, target_point, coordinator: InstanceSimulationCoordinator):
+    def __init__(self, tolerance, target_point, coordinator: InstanceSimulationConfig):
         super().__init__(coordinator)
         self.tolerance = tolerance
         self.target_point = target_point
@@ -262,7 +282,7 @@ class ReleaseAtPoint(Procedure):
         return self.released
 
 class Tracker(Procedure):
-    def __init__(self, limb_id, target_point: Vec2d, coordinator:InstanceSimulationCoordinator):
+    def __init__(self, limb_id, target_point: Vec2d, coordinator:InstanceSimulationConfig):
         super().__init__(coordinator)
         self.limb_id = limb_id
         self.target_point = target_point

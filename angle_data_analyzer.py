@@ -3,7 +3,7 @@ import os
 
 import matplotlib.pyplot as plt
 
-from monkey_bot.simulation_config import SimConfig
+from monkey_bot.config import SimConfig
 if __name__ == "__main__":
     data_file = open("adjust_angle_data.txt").read()
     desired_rates = []

@@ -4,7 +4,7 @@ from unified_planning.plans import PlanKind
 from unified_planning.shortcuts import OneshotPlanner
 # --- Assuming necessary imports from your project ---
 from monkey_bot.robot_controller import Controller
-from monkey_bot.simulation_config import InstanceSimulationCoordinator, SimConfig, RobotConfig
+from monkey_bot.config import InstanceSimulationConfig, SimConfig, RobotConfig
 from monkey_bot.upf_solver import get_problem, solve_problem, solve_problem_with_results
 from monkey_bot.monkey_bot_problem_instance import load_instance
 from pathlib import Path
@@ -52,7 +52,7 @@ def analyze_pruning_combinations(instance_name: str, instances_folder: str = "in
     # 1. Setup Coordinator and Controller for the instance
     instance = load_instance(instance_name, Path(instances_folder))
     sim_config, robot_config = get_default_sim_robot_configs(instance)
-    coordinator = InstanceSimulationCoordinator(instance, sim_config, robot_config)
+    coordinator = InstanceSimulationConfig(instance, sim_config, robot_config)
     controller = Controller(coordinator)
 
     # 2^3 = 8 combinations (P1, P2, P3)
@@ -120,19 +120,10 @@ def analyze_pruning_combinations(instance_name: str, instances_folder: str = "in
     metrics_file = f"{instance_name}_pruning_metrics.csv"
     print(f"\n--- Metrics Table for '{instance_name}' (Saved to {metrics_file}) ---")
     print(df_metrics.to_markdown(numalign="left", stralign="left"))
-    #df_metrics.to_csv(metrics_file)
 
     # 2. Pruning/Time Table
     time_file = f"{instance_name}_transition_time.csv"
     print(f"\n--- Transition Generation Time Table (Saved to {time_file}) ---")
     print(df_pruning.to_markdown(numalign="left", stralign="left"))
-    #df_pruning.to_csv(time_file)
 
     return df_metrics, df_pruning
-# Example Usage (Run this in your environment after making the file changes):
-# from pruning_analyzer import analyze_pruning_combinations
-# df_metrics, df_pruning = analyze_pruning_combinations("Random", "instances")
-# print("--- Metrics Table ---")
-# print(df_metrics)
-# print("\n--- Pruning & Transition Time ---")
-# print(df_pruning)

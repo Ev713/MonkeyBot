@@ -12,7 +12,7 @@ from scipy.optimize import newton_krylov
 
 from monkey_bot.signals import StateSignal
 from monkey_bot.robot_controller import ControlSignal
-from monkey_bot.simulation_config import InstanceSimulationCoordinator
+from monkey_bot.config import InstanceSimulationConfig
 
 class RotationMotor:
     def __init__(self, body, leg):
@@ -115,7 +115,7 @@ class MonkeyBotSimulator:
         self.writer=None
 
 
-    def start_simulation(self, coordinator:InstanceSimulationCoordinator):
+    def start_simulation(self, coordinator:InstanceSimulationConfig):
         pygame.init()
         self.space = pymunk.Space()
         self.epsilon = coordinator.epsilon
@@ -184,7 +184,7 @@ class MonkeyBotSimulator:
         return body, shape
 
     def _create_robot_body(self, init_center_pos, body_radius, body_mass):
-        robot_body = pymunk.Body(moment=999999)
+        robot_body = pymunk.Body(moment=pymunk.inf_float)
         robot_body.position = init_center_pos
         body_shape = pymunk.Circle(robot_body, body_radius)
         body_shape.mass = body_mass
@@ -279,7 +279,7 @@ class MonkeyBotSimulator:
         return spring
 
 
-    def create_monkey_robot(self, coordinator:InstanceSimulationCoordinator):
+    def create_monkey_robot(self, coordinator:InstanceSimulationConfig):
         body = self._create_robot_body(coordinator.screen_init_center(), coordinator.body_radius, coordinator.body_mass)
         for i, (x, y) in enumerate(coordinator.screen_init_feet()):
             # convert to screen position
