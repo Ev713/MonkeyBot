@@ -184,7 +184,7 @@ class MonkeyBotSimulator:
         return body, shape
 
     def _create_robot_body(self, init_center_pos, body_radius, body_mass):
-        robot_body = pymunk.Body(moment=pymunk.inf_float)
+        robot_body = pymunk.Body(moment=10)
         robot_body.position = init_center_pos
         body_shape = pymunk.Circle(robot_body, body_radius)
         body_shape.mass = body_mass

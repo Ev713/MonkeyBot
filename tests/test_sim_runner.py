@@ -15,7 +15,7 @@ sim_config = SimConfig(
         screen_width= 1000,
         fps=120,
         gravity=1,
-        cell_size=40
+        cell_size=20
         )
 
 robot_config = RobotConfig(
@@ -76,30 +76,27 @@ def test_pruning():
     ERROR_FILE = "pruning_analysis_errors.csv"
 
     instances = [
-        #"Random1",
-        #"random_19",
-        #"random_22",
-        "inst_10_4036",
-        "inst_11_3774",
-        "inst_14_937",
-        "inst_15_3576",
-        "inst_18_9006",
-        "inst_19_4685",
-        "inst_20_1085",
-        "inst_21_2145",
-        "inst_23_4412",
-        "inst_25_6904",
-        "inst_27_2945",
-
-#        "random_24",
-#        "random_28",
-#        "random_38",
-#        "random_1981",
-#        "random_2550",
-#        "random_2630",
-#        "random_4588",
-#        "random_5338",
-#        "random_8525",
+#        'random_19',
+        #'inst_22_8228',
+        #'inst_23_3180',
+        #'inst_23_8413',
+        #'inst_25_1057',
+        #'inst_27_471',
+        #'inst_28_8223',
+        #'inst_31_8999',
+        #'inst_35_8160',
+        #'inst_38_1586',
+        #'inst_39_1267',
+        #'inst_40_390',
+        #'inst_42_3753',
+        #'inst_47_9234',
+        'inst_55_5932',
+        'inst_56_6952',
+        'inst_61_5846',
+        'inst_89_5877',
+        'inst_101_4814',
+        'inst_128_5584',
+        'inst_180_3831',
     ]
 
     print(f"Starting analysis for {len(instances)} instances...")
@@ -152,7 +149,7 @@ def test_pruning():
     print("Analysis complete.")
 
 def test_complex_actions_problem(manual=False):
-    instance = load_instance("random_19", INSTANCES_FOLDER)
+    instance = load_instance("inst_22_8228", INSTANCES_FOLDER)
     sim_runner = SimRunner(instance, sim_config=sim_config, robot_config=robot_config)
     if manual:
         sim_runner.execute_manual_simulation(save=True)
@@ -160,15 +157,7 @@ def test_complex_actions_problem(manual=False):
         sim_runner.execute_simulation(save=True)
 
 
+
 if __name__ == "__main__":
-    #test_pruning()
-    #test_angle_adjuster()
-    #test_jump_procedure_sequence()
-    #test_simple_climbing()
-    test_complex_actions_problem()
-    #
-    #df_metrics, df_pruning = analyze_pruning_combinations("Mixed", "instances")
-#    print("--- Metrics Table ---")
-#    print(df_metrics)
-#    print("\n--- Pruning & Transition Time ---")
-#    print(df_pruning)
+    test_pruning()
+    #test_complex_actions_problem()

@@ -3,9 +3,9 @@ import os
 import random
 
 
-grid_size_x = random.randint(10, 20)
-grid_size_y = random.randint(10, 20)
-density = random.random()*0.5+0.2
+grid_size_x = random.randint(10, 30)
+grid_size_y = random.randint(10, 30)
+density = random.random()*0.7+0.3
 
 goal_point = [grid_size_x-2, grid_size_y-2]
 init_center = [2, 2]

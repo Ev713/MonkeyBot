@@ -230,7 +230,11 @@ class Controller:
 
 
     def setup_jump_for_simplified_problem_procedure_sequence(self, current_action:Action, state_info:StateSignal):
-        init1_x, init1_y, init2_x, init2_y, p1x, p1y, p2x, p2y, p3x, p3y = [int(x) for x in current_action.args[0].split('_') if x.isnumeric()]
+        _,_, jp1, jp2, _, catch_p = current_action.name.split('__')
+        init1_x, init1_y = (int(x) for x in jp1.split('_'))
+        init2_x, init2_y = (int(x) for x in jp2.split('_'))
+        p1x, p1y, p2x, p2y, p3x, p3y = (int(x) for x in catch_p.split('_'))
+
         p1, p2, p3 = (p1x, p1y), (p2x, p2y), (p3x, p3y)
         jumping_leg_1_pos = self.coordinator.grid_to_screen(init1_x, init1_y)
         jumping_leg_2_pos = self.coordinator.grid_to_screen(init2_x, init2_y)
@@ -677,7 +681,7 @@ class SimplifiedProblemController(Controller):
                 return sig
             elif "attach" in current_action.name:
                 self.setup_attach_for_simplified_problem_procedure_sequence(current_action)
-            elif "tran" in current_action.name:
+            elif "use_TL" in current_action.name:
                 self.setup_jump_for_simplified_problem_procedure_sequence(current_action, state_info)
             elif "release" in current_action.name:
                 self.setup_release_for_simplified_problem_procedure_sequence(current_action)

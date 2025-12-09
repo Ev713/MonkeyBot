@@ -27,8 +27,10 @@ The state of the robot is defined by its center position ($c$) and the positions
 The system uses a two-tiered action hierarchy:
 
 * **Primitive Actions (Kinematic):**
-    * **Move Foot ($mf^i_p$):** Detaches and re-attaches one foot to a new, reachable grip $p$.
-    * **Move Center ($mc_\delta$):** Shifts the body center to an adjacent grid cell $\delta$, maintaining kinematic reachability for all attached feet.
+    * **Attach ($i, p$):** Attaches one foot to a new, reachable grip $p$.
+    * **Release ($i$):** Releases one foot.
+
+
 * **Complex Actions (Dynamic):**
     * **Transition Links ($U_t$):** Precomputed dynamic maneuvers, specifically **Jumps**, that allow for rapid, non-kinematic transitions between stable configurations. 
 

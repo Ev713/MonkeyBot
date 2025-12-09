@@ -86,7 +86,6 @@ def simplified_problem_is_state_precondition(feet, s, dettached):
 
 def get_simplified_problem(instance:MonkeyBotProblemInstance, transition_links):
     leg_extension = instance.max_extension
-    dettached_pos = (-instance.max_extension, -instance.max_extension)
     n = len(instance.init_feet)
     k = 2
 
@@ -97,15 +96,19 @@ def get_simplified_problem(instance:MonkeyBotProblemInstance, transition_links):
         for p in instance.gripping_points
     }
     foot_is_close_enough = []
-    feet_pos = []
+    foot_released = []
+    foot_at_p = {}
+
     for f_i in range(n):
-        foot_x = Fluent(f"foot_{f_i+1}_x", IntType())
-        foot_y = Fluent(f"foot_{f_i+1}_y", IntType())
-        foot_is_close_enough.append(Fluent(f"foot_{f_i+1}_is_close_enough", BoolType()))
-        feet_pos.append((foot_x, foot_y))
-        problem.add_fluent(foot_x)
-        problem.add_fluent(foot_y)
-        problem.add_fluent(foot_is_close_enough[f_i])
+        # create per-foot fluents once
+        foot_is_close_enough.append(Fluent(f"foot_{f_i + 1}_is_close_enough", BoolType()))
+        foot_released.append(Fluent(f"foot_{f_i + 1}_is_released", BoolType()))
+        problem.add_fluent(foot_is_close_enough[f_i], default_initial_value=False)
+        problem.add_fluent(foot_released[f_i], default_initial_value=False)
+
+        for gp in instance.gripping_points:
+            foot_at_p[f_i, gp] = Fluent(f"foot_{f_i + 1}_at_{tuple_to_str(gp)}", BoolType())
+            problem.add_fluent(foot_at_p[f_i, gp], default_initial_value=False)
 
     valid_sizes = range(k, n+1)
     valid_configs = []
@@ -135,104 +138,87 @@ def get_simplified_problem(instance:MonkeyBotProblemInstance, transition_links):
     for s in valid_states:
         cfg = valid_states[s]
         if len(cfg) > k:
-            for i in range(n):
-                release = InstantaneousAction(f'release__{i+1}__{state_str[s]}')
-                release.add_precondition(simplified_problem_is_state_precondition(feet_pos, s, dettached_pos))
-                release.add_effect(foot_is_close_enough[i], True)
-                release.add_effect(feet_pos[i][0], dettached_pos[0])
-                release.add_effect(feet_pos[i][1], dettached_pos[1])
+            for f_i in range(n):
+                if s[f_i] is None:
+                    continue
+                release = InstantaneousAction(f'release__{f_i+1}__{state_str[s]}')
+                for f_j in range(n):
+                    if s[f_j] is None:
+                        release.add_precondition(foot_released[f_j])
+                    else:
+                        release.add_precondition(foot_at_p[f_j, s[f_j]])
+                release.add_precondition(Not(foot_released[f_i]))
+                release.add_effect(foot_is_close_enough[f_i], True)
+                release.add_effect(foot_released[f_i], True)
+                release.add_effect(foot_at_p[f_i, s[f_i]], False)
                 problem.add_action(release)
         if len(cfg) < n:
             for p in instance.gripping_points:
-                for i in range(n):
+                for f_i in range(n):
                     if not cfg|{p} in valid_configs:
                         continue
-                    if s[i] is not None:
+                    if s[f_i] is not None:
                         continue
-                    attach = InstantaneousAction(f'attach__{i+1}__{tuple_to_str(p)}__{state_str[s]}')
-                    attach.add_precondition(simplified_problem_is_state_precondition(feet_pos, s, dettached_pos))
-                    attach.add_effect(feet_pos[i][0], p[0])
-                    attach.add_effect(feet_pos[i][1], p[1])
-                    attach.add_effect(foot_is_close_enough[i], gp_is_close_enough[p])
+                    attach = InstantaneousAction(f'attach__{f_i+1}__{tuple_to_str(p)}__{state_str[s]}')
+                    for f_j in range(n):
+                        if s[f_j] is None:
+                            attach.add_precondition(foot_released[f_j])
+                        else:
+                            attach.add_precondition(foot_at_p[f_j, s[f_j]])
+                    attach.add_precondition(foot_released[f_i])
+                    attach.add_effect(foot_released[f_i], False)
+                    attach.add_effect(foot_at_p[f_i, p], True)
+                    attach.add_effect(foot_is_close_enough[f_i], gp_is_close_enough[p])
                     problem.add_action(attach)
 
-    for i, (init_foot_x, init_foot_y) in enumerate(instance.init_feet):
-        foot_x, foot_y = feet_pos[i]
-        problem.set_initial_value(foot_x, init_foot_x)
-        problem.set_initial_value(foot_y, init_foot_y)
-        problem.set_initial_value(foot_is_close_enough[i], gp_is_close_enough[(init_foot_x, init_foot_y)])
+    for f_i, gp in enumerate(instance.init_feet):
+        problem.set_initial_value(foot_at_p[f_i, gp], True)
+        problem.set_initial_value(foot_is_close_enough[f_i], gp_is_close_enough[gp])
 
     for ice in foot_is_close_enough:
         problem.add_goal(ice)
 
+        # --- New Logic: Create one action per Transition Link ---
+    if transition_links is None:
+        return problem
 
-    if transition_links is not None:
+    for i, (p_jump1, p_jump2, p_catch) in enumerate(transition_links):
 
-        TransitionLink = UserType("TransitionLink")
+        p_catch_str = tuple_to_str([tuple_to_str(c) for c in p_catch])
+        action_name = f'use_TL__from__{tuple_to_str(p_jump1)}__{tuple_to_str(p_jump2)}__to__{p_catch_str}'
+        transition_action = InstantaneousAction(action_name)
 
-        jumping_leg_1_x = Fluent("jumping_leg_1_x", IntType(), tran=TransitionLink)
-        jumping_leg_2_x = Fluent("jumping_leg_2_x", IntType(), tran=TransitionLink)
-        jumping_leg_1_y = Fluent("jumping_leg_1_y", IntType(), tran=TransitionLink)
-        jumping_leg_2_y = Fluent("jumping_leg_2_y", IntType(), tran=TransitionLink)
+        # --- Preconditions ---
+        # The action requires that both jumping points (p_jump1 and p_jump2) are
+        # currently occupied by *some* foot.
 
-        catch_leg = []
-        for i in range(n):
-            catch_leg_x = Fluent(f"catch_leg_{i+1}_x", IntType(), tran=TransitionLink)
-            catch_leg_y = Fluent(f"catch_leg_{i+1}_y", IntType(), tran=TransitionLink)
-            problem.add_fluent(catch_leg_x)
-            problem.add_fluent(catch_leg_y)
-
-            catch_leg.append((catch_leg_x, catch_leg_y))
-
-        jumping_legs = [(jumping_leg_1_x, jumping_leg_1_y), (jumping_leg_2_x, jumping_leg_2_y)]
-
-        problem.add_fluent(jumping_leg_1_x)
-        problem.add_fluent(jumping_leg_2_x)
-        problem.add_fluent(jumping_leg_1_y)
-        problem.add_fluent(jumping_leg_2_y)
-
-        use_tran = InstantaneousAction("use_tran", tran=TransitionLink)
-        tran = use_tran.parameter("tran")
-
-        foot_at_init = {}
-        for i, j in itertools.product(range(n), [0, 1]):
-            foot_x = feet_pos[i][0]
-            foot_y = feet_pos[i][1]
-            init_x = jumping_legs[j][0](tran)
-            init_y = jumping_legs[j][1](tran)
-
-            foot_at_init[i, j] = Equals(foot_x, init_x), Equals(foot_y, init_y)
-        feet_at_init = None
-        for i, j in itertools.product(range(n), range(n)):
-            if j == i:
-                continue
-            new_case = And(foot_at_init[i, 0], foot_at_init[j, 1])
-            if feet_at_init is None:
-                feet_at_init = new_case
+        prec_jump1 = None
+        for f_i in range(n):
+            if prec_jump1 is None:
+                prec_jump1 = foot_at_p[f_i, p_jump1]
             else:
-                feet_at_init = Or(feet_at_init, new_case)
+                prec_jump1 =  Or(prec_jump1, foot_at_p[f_i, p_jump1])
 
-        use_tran.add_precondition(feet_at_init)
-        for i, (new_x, new_y) in enumerate(catch_leg):
-            use_tran.add_effect(feet_pos[i][0], new_x(tran))
-            use_tran.add_effect(feet_pos[i][1], new_y(tran))
-        problem.add_action(use_tran)
-        for (init1_x, init1_y),(init2_x, init2_y), ((p1x, p1y), (p2x, p2y), (p3x, p3y)) in transition_links:
+        prec_jump2 = None
+        for f_i in range(n):
+            if prec_jump2 is None:
+                prec_jump2 = foot_at_p[f_i, p_jump2]
+            else:
+                prec_jump2 = Or(prec_jump2, foot_at_p[f_i, p_jump2])
 
-            tran = Object(f"tran_{init1_x}_{init1_y}_{init2_x}_{init2_y}_{p1x}_{p1y}_{p2x}_{p2y}_{p3x}_{p3y}", TransitionLink)
-            problem.add_object(tran)
+        transition_action.add_precondition(prec_jump1)
+        transition_action.add_precondition(prec_jump2)
 
-            problem.set_initial_value(jumping_leg_1_x(tran), init1_x)
-            problem.set_initial_value(jumping_leg_2_x(tran), init2_x)
-            problem.set_initial_value(jumping_leg_1_y(tran), init1_y)
-            problem.set_initial_value(jumping_leg_2_y(tran), init2_y)
 
-            problem.set_initial_value(catch_leg[0][0](tran), p1x)
-            problem.set_initial_value(catch_leg[0][1](tran), p1y)
-            problem.set_initial_value(catch_leg[1][0](tran), p2x)
-            problem.set_initial_value(catch_leg[1][1](tran), p2y)
-            problem.set_initial_value(catch_leg[2][0](tran), p3x)
-            problem.set_initial_value(catch_leg[2][1](tran), p3y)
+        for f_i, p_c in enumerate(p_catch):
+            for p in instance.gripping_points:
+                transition_action.add_effect(foot_at_p[f_i, p], False)
+            transition_action.add_effect(foot_at_p[f_i, p_c], True)
+            transition_action.add_effect(foot_is_close_enough[f_i], gp_is_close_enough[p_c])
+            transition_action.add_effect(foot_released[f_i], False)
+
+        problem.add_action(transition_action)
+
     return problem
 
 
@@ -432,13 +418,13 @@ from unified_planning.shortcuts import OneshotPlanner
 
 def solve_problem(problem, timeout=None):
     # Instead of returning just the plan, return the full result object
-    with OneshotPlanner(name='enhsp') as planner:
+    with OneshotPlanner() as planner:
         result = planner.solve(problem, timeout=timeout)
         return result.plan
 
 
 def solve_problem_with_results(problem, timeout=None):
-    with OneshotPlanner(name='enhsp') as planner:
+    with OneshotPlanner() as planner:
         return planner.solve(problem, timeout=timeout)
 
 def solve_instance(instance: MonkeyBotProblemInstance, timout=None):

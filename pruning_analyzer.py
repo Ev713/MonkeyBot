@@ -5,7 +5,7 @@ from unified_planning.shortcuts import OneshotPlanner
 # --- Assuming necessary imports from your project ---
 from monkey_bot.robot_controller import Controller
 from monkey_bot.config import InstanceSimulationConfig, SimConfig, RobotConfig
-from monkey_bot.upf_solver import get_problem, solve_problem, solve_problem_with_results
+from monkey_bot.upf_solver import get_problem, solve_problem, solve_problem_with_results, get_simplified_problem
 from monkey_bot.monkey_bot_problem_instance import load_instance
 from pathlib import Path
 import time
@@ -36,6 +36,7 @@ def get_default_sim_robot_configs(instance):
         min_extension=0.2,
         max_takeoff_speed=20,
         max_jump_dist=15,
+        simplified_problem=True,
         prune_short_jumps=False,
         prune_in_clique_jumps=False,
         prune_similar_jumps=False,
@@ -43,7 +44,7 @@ def get_default_sim_robot_configs(instance):
     return sim_config, robot_config
 
 
-def analyze_pruning_combinations(instance_name: str, instances_folder: str = "instances") -> Tuple[
+def analyze_pruning_combinations(instance_name: str, instances_folder: str = "instances", simplified_problem=True) -> Tuple[
     pd.DataFrame, pd.DataFrame]:
     """
     Analyzes the effect of the three jump transition prunings on the UPF planning process,
@@ -71,18 +72,20 @@ def analyze_pruning_combinations(instance_name: str, instances_folder: str = "in
         pruning_start_time = time.perf_counter()
 
         # Call the internal function to get jump transitions
-        viable_jumps = controller.get_transition_links()
+        transition_links = controller.get_transition_links(for_simplified_problem=True)
 
         pruning_time = time.perf_counter() - pruning_start_time
         # Remove duplicates
-        viable_jumps_unique = list(set(viable_jumps))
-        num_transitions = len(viable_jumps_unique)
+        num_transitions = len(transition_links)
 
         pruning_times[pruning_name] = {"Transition Generation Time (s)": pruning_time,
                                        "Transitions Generated": num_transitions}
 
         # --- Stage 2: UPF Problem Solving ---
-        problem = get_problem(instance, viable_jumps_unique)
+        if simplified_problem:
+            problem = get_simplified_problem(instance, transition_links)
+        else:
+            problem = get_problem(instance, transition_links)
 
         solving_start_time = time.perf_counter()
         result = solve_problem_with_results(problem, timeout=TIMEOUT)
@@ -127,3 +130,4 @@ def analyze_pruning_combinations(instance_name: str, instances_folder: str = "in
     print(df_pruning.to_markdown(numalign="left", stralign="left"))
 
     return df_metrics, df_pruning
+
