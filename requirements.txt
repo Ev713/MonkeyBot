@@ -1,0 +1,9 @@
+pandas~=2.3.3
+pip~=25.1.1
+networkx~=3.5
+numpy~=2.3.4
+scipy~=1.16.3
+pyparsing~=3.2.5
+pymunk~=7.2.0
+pygame~=2.6.1
+ImageIO~=2.37.2
