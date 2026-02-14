@@ -44,7 +44,7 @@ def get_default_sim_robot_configs(instance):
     return sim_config, robot_config
 
 
-def analyze_pruning_combinations(instance_name: str, instances_folder: str = "instances", simplified_problem=True) -> Tuple[
+def analyze_pruning_combinations(instance_name: str, instances_folder: str = "instances", simplified_problem_only=True) -> Tuple[
     pd.DataFrame, pd.DataFrame]:
     """
     Analyzes the effect of the three jump transition prunings on the UPF planning process,
@@ -57,22 +57,24 @@ def analyze_pruning_combinations(instance_name: str, instances_folder: str = "in
     controller = Controller(coordinator)
 
     # 2^3 = 8 combinations (P1, P2, P3)
-    pruning_combinations = list(itertools.product([False, True], repeat=3))
+    pruning_combinations = list(itertools.product([False, True], repeat=4))
     results_list: list[Dict[str, Any]] = []
     pruning_times: Dict[str, Dict[str, Any]] = {}
 
-    for p1, p2, p3 in pruning_combinations:
+    for p1, p2, p3, simplified in pruning_combinations:
+        if simplified_problem_only and not simplified:
+            continue
         robot_config.prune_short_jumps = p1
         robot_config.prune_in_clique_jumps = p2
         robot_config.prune_similar_jumps = p3
-        pruning_name = f"P1={int(p1)}, P2={int(p2)}, P3={int(p3)}"
+        pruning_name = f"P1={int(p1)}, P2={int(p2)}, P3={int(p3)}, NUM={int(not(simplified))}"
         print(f"--- Running {pruning_name} for instance: {instance_name} ---")
 
         # --- Stage 1: Transition Edge Generation (Pruning P1, P2, P3) ---
         pruning_start_time = time.perf_counter()
 
         # Call the internal function to get jump transitions
-        transition_links = controller.get_transition_links(for_simplified_problem=True)
+        transition_links = controller.get_transition_links(for_simplified_problem=simplified)
 
         pruning_time = time.perf_counter() - pruning_start_time
         # Remove duplicates
@@ -82,7 +84,7 @@ def analyze_pruning_combinations(instance_name: str, instances_folder: str = "in
                                        "Transitions Generated": num_transitions}
 
         # --- Stage 2: UPF Problem Solving ---
-        if simplified_problem:
+        if simplified:
             problem = get_simplified_problem(instance, transition_links)
         else:
             problem = get_problem(instance, transition_links)
