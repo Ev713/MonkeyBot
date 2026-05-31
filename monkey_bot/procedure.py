@@ -7,6 +7,10 @@ from monkey_bot.signals import StateSignal, ControlSignal
 from monkey_bot.config import InstanceSimulationConfig
 
 
+def normalize_angle(angle: float) -> float:
+    return (angle + math.pi) % (2 * math.pi) - math.pi
+
+
 class Procedure:
     def __init__(self, coordinator: InstanceSimulationConfig):
         self.epsilon = coordinator.epsilon
@@ -52,8 +56,11 @@ class AdjustLength(Procedure):
         return  (state_info.center_pos - state_info.feet_pos[self.limb_id]).length
 
     def adjust_signal(self, signal: ControlSignal, state_info):
-        sign = 1 if self.goal_extension - self.curr_length(state_info) > 0 else -1
-        signal.extension[self.limb_id] = signal.extension[self.limb_id] + sign*self.extension_speed
+        error = self.goal_extension - self.curr_length(state_info)
+        if abs(error) < self.epsilon:
+            return signal
+        drive = max(-self.extension_speed, min(self.extension_speed, 3.0 * error))
+        signal.extension[self.limb_id] = signal.extension[self.limb_id] + drive
         return signal
 
     def is_finished(self, state_info:StateSignal):
@@ -295,8 +302,8 @@ class Tracker(Procedure):
 
     def adjust_signal(self, signal: ControlSignal, state_info: StateSignal):
         self.length_adjuster.goal_extension = (self.target_point - state_info.center_pos).length
-        signal = self.length_adjuster.adjust_signal(signal, state_info)
         signal = self.angle_adjuster.adjust_signal(signal, state_info)
+        signal = self.length_adjuster.adjust_signal(signal, state_info)
         return signal
 
     def is_finished(self, state_info:StateSignal):
@@ -372,6 +379,99 @@ class MoveCenter(Procedure):
 
     def is_finished(self, state_info:StateSignal):
         return (state_info.center_pos - self.goal_point).length < self.epsilon
+
+def free_limb_is_rotating(signal: ControlSignal, state_info: StateSignal, eps: float = 1e-6) -> bool:
+    return any(
+        abs(rate) > eps and not state_info.active_grips[i]
+        for i, rate in enumerate(signal.rotation)
+    )
+
+
+def limb_length(state_info: StateSignal, limb_id: int) -> float:
+    return (state_info.center_pos - state_info.feet_pos[limb_id]).length
+
+
+class BodyHolder(Procedure):
+    def __init__(
+        self,
+        coordinator: InstanceSimulationConfig,
+        *holding_limb_ids: int,
+        kp: float = 12.0,
+        kd: float = 2.5,
+        extension_kp: float = 6.0,
+        rotation_power: float = 1.0,
+        extension_power: float = 1.0,
+        smooth: float = 0.75,
+        eps: float = 1e-6,
+        length_eps: float = 0.3,
+    ):
+        super().__init__(coordinator)
+        self.holding_limb_ids = holding_limb_ids
+        self.kp = kp
+        self.kd = kd
+        self.extension_kp = extension_kp
+        self.rotation_power = rotation_power
+        self.extension_power = extension_power
+        self.smooth = smooth
+        self.eps = eps
+        self.length_eps = length_eps
+        self.ref_angle = None
+        self.ref_lengths: dict[int, float] = {}
+        self.prev_rotation = 0.0
+        self.prev_extension: dict[int, float] = {}
+
+    def _smooth_step(self, previous, target, max_step):
+        blended = self.smooth * previous + (1.0 - self.smooth) * target
+        return previous + max(-max_step, min(max_step, blended - previous))
+
+    def adjust_signal(self, signal: ControlSignal, state_info: StateSignal):
+        active_holders = [
+            limb_id for limb_id in self.holding_limb_ids
+            if state_info.active_grips[limb_id]
+        ]
+        if not active_holders or not free_limb_is_rotating(signal, state_info, self.eps):
+            self.ref_angle = None
+            self.ref_lengths.clear()
+            self.prev_rotation = 0.0
+            self.prev_extension.clear()
+            return signal
+
+        if self.ref_angle is None:
+            self.ref_angle = state_info.body_angle
+
+        max_rotation = self.rotation_speed * self.rotation_power
+        max_extension = self.extension_speed * self.extension_power
+        max_rotation_step = max_rotation * 3.0 * self.dt
+        max_extension_step = max_extension * 3.0 * self.dt
+
+        theta_err = normalize_angle(state_info.body_angle - self.ref_angle)
+        target_rotation = -self.kp * theta_err - self.kd * state_info.body_angular_velocity
+        target_rotation = max(-max_rotation, min(max_rotation, target_rotation))
+        smoothed_rotation = self._smooth_step(self.prev_rotation, target_rotation, max_rotation_step)
+        self.prev_rotation = smoothed_rotation
+
+        for limb_id in active_holders:
+            signal.rotation[limb_id] = smoothed_rotation
+
+            current_length = limb_length(state_info, limb_id)
+            if limb_id not in self.ref_lengths:
+                self.ref_lengths[limb_id] = current_length
+
+            length_deficit = self.ref_lengths[limb_id] - current_length
+            prev_ext = self.prev_extension.get(limb_id, 0.0)
+            if length_deficit > self.length_eps:
+                target_extension = min(max_extension, self.extension_kp * length_deficit)
+            else:
+                target_extension = 0.0
+
+            smoothed_extension = self._smooth_step(prev_ext, target_extension, max_extension_step)
+            self.prev_extension[limb_id] = smoothed_extension
+            signal.extension[limb_id] = signal.extension[limb_id] + smoothed_extension
+
+        return signal
+
+    def is_finished(self, state_info: StateSignal):
+        return True
 
 class Mixed(Procedure):
     def __init__(self, procs:List[Procedure], coordinator, finish_at_any = False):

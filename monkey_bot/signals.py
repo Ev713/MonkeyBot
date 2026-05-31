@@ -17,4 +17,6 @@ class StateSignal:
     feet_pos:List[Vec2d]
     active_grips:List[Bool]
     t:int
+    body_angle:float=0.0
+    body_angular_velocity:float=0.0
 

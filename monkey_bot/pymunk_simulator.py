@@ -10,8 +10,7 @@ import pymunk.pygame_util
 from pymunk import SimpleMotor, Transform, Vec2d
 from scipy.optimize import newton_krylov
 
-from monkey_bot.signals import StateSignal
-from monkey_bot.robot_controller import ControlSignal
+from monkey_bot.signals import ControlSignal, StateSignal
 from monkey_bot.config import InstanceSimulationConfig
 
 class RotationMotor:
@@ -36,8 +35,7 @@ class RotationMotor:
         elif self.desired_rate == 0:
             new_rate = self.desired_rate
         else:
-            p = 0.9
-            new_rate = (1-p)*real_rate+p*self.desired_rate
+            new_rate = self.desired_rate
         self.motor.rate = new_rate
         self.last_angle = self.curr_angle
         self.last_body_angle = self.curr_body_angle
@@ -55,8 +53,7 @@ class RotationMotor:
 
     @property
     def curr_angle(self):
-        angle_diff =self.leg.angle#=  self.body.angle - self.leg.angle
-        return self.normalize_angle(angle_diff)
+        return self.normalize_angle(self.leg.angle - self.body.angle)
 
     @property
     def curr_body_angle(self):
@@ -71,7 +68,6 @@ class SpringMotor:
         self.extension_speed = 0
 
     def set_extension_speed(self, speed):
-        self.calibrate()
         self.extension_speed = speed
 
     def calibrate(self):
@@ -397,7 +393,11 @@ class MonkeyBotSimulator:
             self.clock.tick(self.sim_config.fps)
 
     def get_state(self):
-        return StateSignal(center_pos=self.get_center_pos(),
-                           feet_pos = [self.get_foot_pos(i) for i, _ in enumerate(self.feet)],
-            active_grips = [a is not None for a in self.active_grips],
-            t=self.t)
+        return StateSignal(
+            center_pos=self.get_center_pos(),
+            feet_pos=[self.get_foot_pos(i) for i, _ in enumerate(self.feet)],
+            active_grips=[a is not None for a in self.active_grips],
+            t=self.t,
+            body_angle=self.body.angle,
+            body_angular_velocity=self.body.angular_velocity,
+        )

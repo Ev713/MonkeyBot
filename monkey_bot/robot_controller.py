@@ -15,7 +15,7 @@ from monkey_bot import upf_solver
 from monkey_bot.action import parse_action, Action
 import monkey_bot.upf_solver
 from monkey_bot.procedure import MoveCenter, ReleaseGrip, Mixed, Tracker, Grabber, AdjustLength, DynamicCatch, \
-    MultiOptionalDynamicCatch, ReleaseAtPoint, GetCloser
+    MultiOptionalDynamicCatch, ReleaseAtPoint, GetCloser, BodyHolder
 from monkey_bot.signals import ControlSignal, StateSignal
 from monkey_bot.config import InstanceSimulationConfig
 from monkey_bot.trajectory_finder import Launcher, GeometricLauncher
@@ -204,11 +204,15 @@ class Controller:
     def setup_move_foot_procedure_sequence(self, current_action:Action):
         goal_point = self.coordinator.gp_name_to_screen_point(current_action.args[0])
         limb_id = int(current_action.name.split('_')[-1])
+        holding_limb_ids = [i for i in range(self.coordinator.num_legs) if i != limb_id]
         self.procedures = []
 
         self.procedures.append(ReleaseGrip(limb_id, self.coordinator))
-        catcher = Mixed([Tracker(limb_id, goal_point, self.coordinator),
-                        Grabber(limb_id, goal_point, self.coordinator)], self.coordinator)
+        catcher = Mixed([
+            Tracker(limb_id, goal_point, self.coordinator),
+            BodyHolder(self.coordinator, *holding_limb_ids),
+            Grabber(limb_id, goal_point, self.coordinator),
+        ], self.coordinator)
         self.procedures.append(catcher)
 
         self.proc_id = 0
@@ -218,12 +222,16 @@ class Controller:
         goal_point = int(goal_point_str[0]), int(goal_point_str[1])
         goal_point = self.coordinator.grid_to_screen(*goal_point)
         limb_id = int(current_action.name.split('__')[1])-1
+        holding_limb_ids = [i for i in range(self.coordinator.num_legs) if i != limb_id]
         self.procedures = []
 
         self.procedures.append(ReleaseGrip(limb_id, self.coordinator))
-        catcher = Mixed([GetCloser(goal_point, self.coordinator),
-                            Tracker(limb_id, goal_point, self.coordinator),
-                        Grabber(limb_id, goal_point, self.coordinator)], self.coordinator)
+        catcher = Mixed([
+            GetCloser(goal_point, self.coordinator),
+            Tracker(limb_id, goal_point, self.coordinator),
+            BodyHolder(self.coordinator, *holding_limb_ids),
+            Grabber(limb_id, goal_point, self.coordinator),
+        ], self.coordinator)
         self.procedures.append(catcher)
 
         self.proc_id = 0
