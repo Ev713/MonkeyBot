@@ -13,6 +13,8 @@ class SimConfig:
     fps:int
     gravity:float=0.5
     cell_size: float = 50
+    render_scale: float = 1
+    realtime: bool = True
 
     @property
     def dt(self):

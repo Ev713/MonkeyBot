@@ -1,0 +1,20 @@
+# Experiment outputs (CSVs, plots, tuning trials)
+experiments/results/*
+!experiments/results/.gitkeep
+!experiments/results/logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Runtime logs
+experiments/results/logs/*.txt
+
+# IDE
+.idea/
+
+# Reference material (not part of repo)
+ModernRobotics.pdf

@@ -6,7 +6,7 @@ import traceback
 from monkey_bot.monkey_bot_problem_instance import load_instance
 from monkey_bot.sim_runner import SimRunner
 from monkey_bot.config import SimConfig, RobotConfig
-from pruning_analyzer import analyze_pruning_combinations
+from experiments.pruning_analyzer import analyze_pruning_combinations
 
 INSTANCES_FOLDER = "instances"
 save_simulation=True
@@ -71,9 +71,9 @@ def append_to_csv(df, filename):
 
 def test_pruning():
     """Main function to run the analysis and handle I/O."""
-    METRICS_SUCCESS_FILE = "metrics_analysis_results.csv"
-    PRUNING_SUCCESS_FILE = "pruning_analysis_results.csv"
-    ERROR_FILE = "pruning_analysis_errors.csv"
+    METRICS_SUCCESS_FILE = "experiments/results/metrics_analysis_results.csv"
+    PRUNING_SUCCESS_FILE = "experiments/results/pruning_analysis_results.csv"
+    ERROR_FILE = "experiments/results/pruning_analysis_errors.csv"
 
     instances = [
         'random_19',

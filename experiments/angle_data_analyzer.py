@@ -5,7 +5,8 @@ import matplotlib.pyplot as plt
 
 from monkey_bot.config import SimConfig
 if __name__ == "__main__":
-    data_file = open("adjust_angle_data.txt").read()
+    log_path = "experiments/results/logs/adjust_angle_data.txt"
+    data_file = open(log_path).read()
     desired_rates = []
     real_rates = []
     new_rates = []

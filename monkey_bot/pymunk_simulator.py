@@ -7,7 +7,7 @@ import imageio as imageio  # install: pip install imageio
 import pygame
 import pymunk
 import pymunk.pygame_util
-from pymunk import SimpleMotor, Vec2d
+from pymunk import SimpleMotor, Transform, Vec2d
 from scipy.optimize import newton_krylov
 
 from monkey_bot.signals import StateSignal
@@ -24,8 +24,10 @@ class RotationMotor:
         self.last_body_angle = 0
         self.log = None
 
-    def enable_log(self):
-        self.log = open("adjust_angle_data.txt", 'w')
+    def enable_log(self, path="experiments/results/logs/adjust_angle_data.txt"):
+        import os
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self.log = open(path, 'w')
 
     def step(self, dt):
         real_rate = self.actual_rate(dt)
@@ -123,11 +125,25 @@ class MonkeyBotSimulator:
         self.simulation_name = coordinator.instance.name
         self.window = pygame.display.set_mode((self.sim_config.screen_width, self.sim_config.screen_height))
         self.draw_options = pymunk.pygame_util.DrawOptions(self.window)
+        self.configure_render_transform()
         self.create_grip_points(coordinator.screen_grip_points())
         self.create_goal_point(coordinator.screen_goal_point())
         self.create_monkey_robot(coordinator)
         self.run=True
         self.draw()
+
+    def configure_render_transform(self):
+        render_scale = getattr(self.sim_config, "render_scale", 1) or 1
+        center_x = self.sim_config.screen_width / 2
+        center_y = self.sim_config.screen_height / 2
+        self.draw_options.transform = Transform(
+            render_scale,
+            0,
+            0,
+            render_scale,
+            center_x * (1 - render_scale),
+            center_y * (1 - render_scale),
+        )
 
 
     def get_foot_pos(self, foot_id):
@@ -377,11 +393,11 @@ class MonkeyBotSimulator:
         self.t += 1
         self.draw()
         self.space.step(self.sim_config.dt)
-        self.clock.tick(self.sim_config.fps)
+        if getattr(self.sim_config, "realtime", True):
+            self.clock.tick(self.sim_config.fps)
 
     def get_state(self):
         return StateSignal(center_pos=self.get_center_pos(),
                            feet_pos = [self.get_foot_pos(i) for i, _ in enumerate(self.feet)],
             active_grips = [a is not None for a in self.active_grips],
             t=self.t)
-
