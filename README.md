@@ -1,4 +1,4 @@
-# 🐒 MonkeyBot: Adhesion-Free Wall Climbing Framework
+# MonkeyBot: Adhesion-Free Wall Climbing Framework
 
 | Status | Language | License |
 | :--- | :--- | :--- |
@@ -74,9 +74,3 @@ python experiments/experiment_metrics.py
 python experiments/pruning_analyzer.py
 ```
 
----
-
-## Further Reading
-
-- **`docs/controller_improvement_plan.md`** — Proposed fixes for jerky limb motion and low jump success rate
-- **`docs/control_system_rework_plan.md`** — Archived MR-style control stack design (not in use)
