@@ -10,8 +10,56 @@ import pymunk.pygame_util
 from pymunk import SimpleMotor, Transform, Vec2d
 from scipy.optimize import newton_krylov
 
+from monkey_bot.runtime_debug import procedure_status
 from monkey_bot.signals import ControlSignal, StateSignal
 from monkey_bot.config import InstanceSimulationConfig
+
+
+def _is_finite_scalar(value: float) -> bool:
+    return isinstance(value, (int, float)) and math.isfinite(float(value))
+
+
+def _coords_ok(*values) -> bool:
+    for value in values:
+        if isinstance(value, Vec2d):
+            if not (_is_finite_scalar(value.x) and _is_finite_scalar(value.y)):
+                return False
+        elif isinstance(value, (tuple, list)) and len(value) >= 2:
+            if not (_is_finite_scalar(value[0]) and _is_finite_scalar(value[1])):
+                return False
+        elif not _is_finite_scalar(value):
+            return False
+    return True
+
+
+class SafeDrawOptions(pymunk.pygame_util.DrawOptions):
+    """Skip debug-draw primitives with non-finite coordinates (avoids pygame spam)."""
+
+    def draw_circle(self, pos, angle, radius, outline_color, fill_color):
+        if not _coords_ok(pos, angle, radius):
+            return
+        super().draw_circle(pos, angle, radius, outline_color, fill_color)
+
+    def draw_segment(self, a, b, color):
+        if not _coords_ok(a, b):
+            return
+        super().draw_segment(a, b, color)
+
+    def draw_fat_segment(self, a, b, radius, outline_color, fill_color):
+        if not _coords_ok(a, b, radius):
+            return
+        super().draw_fat_segment(a, b, radius, outline_color, fill_color)
+
+    def draw_polygon(self, verts, radius, outline_color, fill_color):
+        if not all(_coords_ok(v) for v in verts):
+            return
+        super().draw_polygon(verts, radius, outline_color, fill_color)
+
+    def draw_dot(self, size, pos, color):
+        if not _coords_ok(pos, size):
+            return
+        super().draw_dot(size, pos, color)
+
 
 class RotationMotor:
     def __init__(self, body, leg):
@@ -119,18 +167,29 @@ class MonkeyBotSimulator:
         self.body_leg_angle_locks: list[pymunk.RotaryLimitJoint | None] = []
         self.leg_grooves = []
         self.spring_motors = []
-        self.writer=None
+        self.writer = None
+        self._display_active = False
+        self._halted = False
+        self.coordinator = None
+        self._last_signal: ControlSignal | None = None
+
+        self._max_body_angular_velocity = 50.0
+        self._max_speed_px_s = 2000.0
 
 
     def start_simulation(self, coordinator:InstanceSimulationConfig):
         pygame.init()
+        self.coordinator = coordinator
+        self._last_signal = None
+        self._display_active = True
+        self._halted = False
         self.space = pymunk.Space()
         self.epsilon = coordinator.epsilon
         self.grip_tolerance = coordinator.epsilon + coordinator.foot_radius
         self.space.gravity = (0, coordinator.gravity)
         self.simulation_name = coordinator.instance.name
         self.window = pygame.display.set_mode((self.sim_config.screen_width, self.sim_config.screen_height))
-        self.draw_options = pymunk.pygame_util.DrawOptions(self.window)
+        self.draw_options = SafeDrawOptions(self.window)
         self.configure_render_transform()
         self.create_grip_points(coordinator.screen_grip_points())
         self.create_goal_point(coordinator.screen_goal_point())
@@ -372,44 +431,231 @@ class MonkeyBotSimulator:
             self.check_and_grip(i)
 
 
+    def _halt_simulation(self, reason: str):
+        if self._halted:
+            return
+        self._halted = True
+        self.run = False
+        print(reason, flush=True)
+        self._print_halt_diagnostics(reason)
+        if self.writer is not None:
+            self.writer.close()
+            self.writer = None
+        if self._display_active:
+            self._display_active = False
+            try:
+                pygame.quit()
+            except pygame.error:
+                pass
+
     def draw(self):
+        if not self.run or not self._display_active or self.window is None:
+            return
         if not self._physics_is_valid():
+            self._halt_simulation("Simulation unstable (invalid physics state).")
             return
-        self.window.fill("white")
         try:
+            self.window.fill("white")
             self.space.debug_draw(self.draw_options)
-        except TypeError:
-            return
-        pygame.display.update()
+            pygame.display.update()
+        except (TypeError, pygame.error):
+            self._halt_simulation("Simulation display failed (physics likely unstable).")
 
     def _vec_is_finite(self, vec) -> bool:
         return math.isfinite(vec.x) and math.isfinite(vec.y)
 
-    def _physics_is_valid(self) -> bool:
-        if self.body is None:
-            return True
-        if not self._vec_is_finite(self.body.position):
-            return False
-        if not math.isfinite(self.body.angle):
-            return False
-        if not math.isfinite(self.body.angular_velocity):
-            return False
-        for foot_body, _ in self.feet:
-            if not self._vec_is_finite(foot_body.position):
-                return False
-        for leg_body, _ in self.legs:
-            if not self._vec_is_finite(leg_body.position):
-                return False
-        return True
+    def _speed_px_s(self, body) -> float:
+        return math.hypot(body.velocity.x, body.velocity.y)
 
-    def _damp_body_motion(self, *, angular_factor: float = 0.85, linear_factor: float = 0.95):
+    def _collect_halt_issues(
+        self,
+        label: str,
+        body,
+        *,
+        check_angle: bool = False,
+        max_angular_velocity: float | None = None,
+    ) -> list[str]:
+        """Issues that should stop the simulation (non-finite state, runaway body spin)."""
+        issues = []
+        pos = body.position
+        vel = body.velocity
+        if not self._vec_is_finite(pos):
+            issues.append(f"{label}: NON-FINITE position ({pos.x}, {pos.y})")
+        if not self._vec_is_finite(vel):
+            issues.append(f"{label}: NON-FINITE velocity ({vel.x}, {vel.y})")
+        if check_angle:
+            if not math.isfinite(body.angle):
+                issues.append(f"{label}: NON-FINITE angle")
+            spin = body.angular_velocity
+            if not math.isfinite(spin):
+                issues.append(f"{label}: NON-FINITE angular velocity")
+            limit = (
+                max_angular_velocity
+                if max_angular_velocity is not None
+                else self._max_body_angular_velocity
+            )
+            if math.isfinite(spin) and abs(spin) > limit:
+                issues.append(f"{label}: extreme spin {spin:.2f} rad/s")
+        return issues
+
+    def _collect_speed_warnings(self, label: str, body) -> list[str]:
+        """High speeds are logged but do not halt — transient spikes are not always fatal."""
+        speed = self._speed_px_s(body)
+        if math.isfinite(speed) and speed > self._max_speed_px_s:
+            return [f"{label}: high speed {speed:.0f} px/s"]
+        return []
+
+    def _physics_halt_issues(self) -> list[str]:
+        if self.body is None:
+            return []
+        issues = self._collect_halt_issues(
+            "body",
+            self.body,
+            check_angle=True,
+            max_angular_velocity=self._max_body_angular_velocity,
+        )
+        for i, (foot_body, _) in enumerate(self.feet):
+            leg_num = i + 1
+            grip = "GRIPPED" if self.active_grips[i] is not None else "FREE"
+            issues.extend(
+                self._collect_halt_issues(f"leg {leg_num} foot ({grip})", foot_body)
+            )
+        for i, (leg_body, _) in enumerate(self.legs):
+            leg_num = i + 1
+            grip = "GRIPPED" if self.active_grips[i] is not None else "FREE"
+            issues.extend(
+                self._collect_halt_issues(f"leg {leg_num} segment ({grip})", leg_body)
+            )
+        return issues
+
+    def _physics_speed_warnings(self) -> list[str]:
+        if self.body is None:
+            return []
+        warnings = self._collect_speed_warnings("body", self.body)
+        for i, (foot_body, _) in enumerate(self.feet):
+            leg_num = i + 1
+            grip = "GRIPPED" if self.active_grips[i] is not None else "FREE"
+            warnings.extend(
+                self._collect_speed_warnings(f"leg {leg_num} foot ({grip})", foot_body)
+            )
+        for i, (leg_body, _) in enumerate(self.legs):
+            leg_num = i + 1
+            grip = "GRIPPED" if self.active_grips[i] is not None else "FREE"
+            warnings.extend(
+                self._collect_speed_warnings(f"leg {leg_num} segment ({grip})", leg_body)
+            )
+        return warnings
+
+    def _physics_issues(self) -> list[str]:
+        return self._physics_halt_issues() + self._physics_speed_warnings()
+
+    def _physics_is_valid(self) -> bool:
+        return not self._physics_halt_issues()
+
+    def _format_grid_pos(self, pos) -> str:
+        if self.coordinator is None:
+            return f"({pos.x:.1f},{pos.y:.1f})px"
+        gx, gy = self.coordinator.screen_to_grid(Vec2d(pos.x, pos.y))
+        return f"({gx:.1f},{gy:.1f})"
+
+    def _format_speed(self, speed_px_s: float) -> str:
+        if self.coordinator is None or self.coordinator.cell_size <= 0:
+            return f"{speed_px_s:.0f} px/s"
+        cells_s = speed_px_s / self.coordinator.cell_size
+        return f"{speed_px_s:.0f} px/s ({cells_s:.1f} cells/s)"
+
+    def _leg_spring_length(self, limb_id: int) -> tuple[float, float]:
+        spring = self.leg_springs[limb_id]
+        actual = (spring.a.position - spring.b.position).length
+        return actual, spring.rest_length
+
+    def _print_halt_diagnostics(self, reason: str) -> None:
+        print(f"\n=== Simulation halt diagnostics ===", flush=True)
+        print(f"reason: {reason}", flush=True)
+        print(f"frame: {self.t}", flush=True)
+        if procedure_status:
+            print(f"procedure: {procedure_status}", flush=True)
+
+        issues = self._physics_halt_issues()
+        if issues:
+            print("halt triggers:", flush=True)
+            for issue in issues:
+                print(f"  * {issue}", flush=True)
+        else:
+            print("halt triggers: (none — check warnings below)", flush=True)
+
+        warnings = self._physics_speed_warnings()
+        if warnings:
+            print("speed warnings (non-fatal):", flush=True)
+            for warning in warnings:
+                print(f"  * {warning}", flush=True)
+
+        if self.body is None:
+            return
+
+        body_speed = self._speed_px_s(self.body)
+        print(
+            f"body: pos={self._format_grid_pos(self.body.position)} "
+            f"vel={self._format_speed(body_speed)} "
+            f"spin={self.body.angular_velocity:.3f} rad/s "
+            f"angle={math.degrees(self.body.angle):.1f}°",
+            flush=True,
+        )
+
+        for i, (foot_body, _) in enumerate(self.feet):
+            leg_num = i + 1
+            foot_speed = self._speed_px_s(foot_body)
+            leg_body, _ = self.legs[i]
+            leg_speed = self._speed_px_s(leg_body)
+            actual_len, rest_len = self._leg_spring_length(i)
+            cell = self.coordinator.cell_size if self.coordinator else 1.0
+            rot_cmd = ext_cmd = "?"
+            if self._last_signal is not None:
+                rot_cmd = f"{self._last_signal.rotation[i]:+.3f}"
+                ext_cmd = f"{self._last_signal.extension[i]:+.3f}"
+            motor_rate = self.rotation_motors[i].desired_rate
+            ext_rate = self.spring_motors[i].extension_speed
+            grip = "GRIPPED" if self.active_grips[i] is not None else "free"
+            print(
+                f"leg {leg_num} [{grip}]: "
+                f"foot {self._format_grid_pos(foot_body.position)} "
+                f"foot_vel={self._format_speed(foot_speed)} | "
+                f"segment_vel={self._format_speed(leg_speed)} | "
+                f"spring {actual_len / cell:.2f}/{rest_len / cell:.2f} cells "
+                f"(actual/rest) | "
+                f"cmd rot={rot_cmd} ext={ext_cmd} | "
+                f"motor rot={motor_rate:+.3f} ext_rate={ext_rate:+.3f}",
+                flush=True,
+            )
+
+        if self._last_signal is not None:
+            sig = self._last_signal
+            print(
+                f"last signal: grip={sig.grip} damp_body={sig.damp_body} "
+                f"relax_spring={sig.relax_spring}",
+                flush=True,
+            )
+        print("=== end diagnostics ===\n", flush=True)
+
+    def _damp_body_motion(
+        self,
+        *,
+        angular_factor: float = 0.85,
+        linear_factor: float = 0.95,
+        free_foot_linear_factor: float = 0.80,
+    ):
         self.body.angular_velocity *= angular_factor
         self.body.velocity = self.body.velocity * linear_factor
         for leg_body, _ in self.legs:
             leg_body.angular_velocity *= angular_factor
-        for foot_body, _ in self.feet:
+        for i, (foot_body, _) in enumerate(self.feet):
             foot_body.angular_velocity *= angular_factor
-            foot_body.velocity = foot_body.velocity * linear_factor
+            foot_factor = (
+                free_foot_linear_factor
+                if self.active_grips[i] is None
+                else linear_factor
+            )
+            foot_body.velocity = foot_body.velocity * foot_factor
 
     def create_boundaries(self, width, height):
         rects = [
@@ -438,6 +684,7 @@ class MonkeyBotSimulator:
         Apply control signal by setting angular and linear velocities,
         not by directly modifying positions.
         """
+        self._last_signal = signal
         lock_commands = signal.angle_lock if signal.angle_lock else None
         relax_commands = signal.relax_spring if signal.relax_spring else None
         for i, _ in enumerate(self.legs):
@@ -470,12 +717,10 @@ class MonkeyBotSimulator:
                 self.body.position[1] > self.sim_config.screen_height)
 
     def step(self):
+        if not self.run or self._halted:
+            return
         if not self._physics_is_valid():
-            print("Simulation unstable (invalid physics state).", flush=True)
-            self.run = False
-            pygame.quit()
-            if self.writer is not None:
-                self.writer.close()
+            self._halt_simulation("Simulation unstable (invalid physics state).")
             return
 
         for m in self.spring_motors:
@@ -483,28 +728,25 @@ class MonkeyBotSimulator:
         for m in self.rotation_motors:
             m.step(self.sim_config.dt)
         for event in pygame.event.get():
-            if event.type == pygame.QUIT or self.gone_wrong() or not self.run :
-                self.run=False
-                pygame.quit()
-                if self.writer is not None:
-                    self.writer.close()
-                break
+            if event.type == pygame.QUIT:
+                self._halt_simulation("Simulation window closed.")
+                return
+            if self.gone_wrong():
+                self._halt_simulation("Simulation left the visible area.")
+                return
 
-         # make it (height, width, 3)
+        self.space.step(self.sim_config.dt)
+
+        if not self._physics_is_valid():
+            self._halt_simulation("Simulation became unstable after physics step.")
+            return
+
         if self.writer:
             frame = pygame.surfarray.array3d(pygame.display.get_surface())
             frame = frame.swapaxes(0, 1)
             self.writer.append_data(frame)
         self.t += 1
         self.draw()
-        self.space.step(self.sim_config.dt)
-        if not self._physics_is_valid():
-            print("Simulation became unstable after physics step.", flush=True)
-            self.run = False
-            pygame.quit()
-            if self.writer is not None:
-                self.writer.close()
-            return
         if getattr(self.sim_config, "realtime", True):
             self.clock.tick(self.sim_config.fps)
 

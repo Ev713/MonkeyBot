@@ -7,6 +7,7 @@ from typing import Optional
 import pygame
 
 from monkey_bot.config import RobotConfig, SimConfig
+from monkey_bot.demo_progress import load_record, try_commit_record
 from monkey_bot.goal_generator import build_replan_instance
 from monkey_bot.simplified_graph_planner import analyze_reachability
 from monkey_bot.monkey_bot_problem_instance import MonkeyBotProblemInstance
@@ -54,6 +55,10 @@ class InfiniteDemoRunner(SimRunner):
         self._pending_plan = None
         self._status_message = "Starting..."
 
+        self._record_actions = load_record()
+        self._session_actions_completed = 0
+        self._last_actions_finished = 0
+
         num_legs = self.config.num_legs
         self.current_signal = empty_control_signal(num_legs)
         self.latest_state = None
@@ -88,6 +93,11 @@ class InfiniteDemoRunner(SimRunner):
         planner_thread.start()
 
         print("Infinite demo running — close the window or press Ctrl+C to stop.", flush=True)
+        if self._record_actions:
+            print(
+                f"Demo action record to beat: {self._record_actions} actions in one run.",
+                flush=True,
+            )
 
         try:
             self._sim_loop()
@@ -112,6 +122,11 @@ class InfiniteDemoRunner(SimRunner):
             self.simulator.apply_signal(signal)
             self._update_window_caption()
             self.simulator.step()
+
+            if not self.simulator.run and not self._stop.is_set():
+                self._status_message = "Simulation stopped (physics unstable)."
+                self.stop()
+                break
 
             with self._state_lock:
                 self.latest_state = self.simulator.get_state()
@@ -145,9 +160,27 @@ class InfiniteDemoRunner(SimRunner):
                 continue
 
             signal = self.controller.get_sig(state)
+            self._track_action_completions()
             with self._signal_lock:
                 self.current_signal = signal
             time.sleep(0.001)
+
+    def _track_action_completions(self):
+        finished = self.controller.actions_finished
+        if finished <= self._last_actions_finished:
+            return
+
+        delta = finished - self._last_actions_finished
+        self._last_actions_finished = finished
+        self._session_actions_completed += delta
+        print(
+            f"Actions completed this run: {self._session_actions_completed} "
+            f"(record: {self._record_actions})",
+            flush=True,
+        )
+        if self._session_actions_completed > self._record_actions:
+            if try_commit_record(self._session_actions_completed):
+                self._record_actions = self._session_actions_completed
 
     def _planner_loop(self):
         while not self._stop.is_set():
@@ -281,6 +314,7 @@ class InfiniteDemoRunner(SimRunner):
         self.controller.coordinator = self.config
         self.controller.reset_for_new_plan(plan)
         self.simulator.update_goal_point(self.config.screen_goal_point())
+        self._last_actions_finished = 0
 
         self._segments_completed += 1
         self._new_plan_ready.clear()
@@ -293,7 +327,9 @@ class InfiniteDemoRunner(SimRunner):
         goal = self.config.instance.goal_point
         caption = (
             f"{self.base_instance.name} infinite demo | "
-            f"segment {self._segments_completed} | goal {goal} | {self._status_message}"
+            f"segment {self._segments_completed} | "
+            f"actions {self._session_actions_completed}/{self._record_actions} | "
+            f"goal {goal} | {self._status_message}"
         )
         try:
             pygame.display.set_caption(caption)

@@ -127,8 +127,13 @@ class Controller:
         return empty_control_signal(self.coordinator.num_legs)
 
     @staticmethod
-    def _procedure_label(procedure) -> str:
-        return type(procedure).__name__
+    def _procedure_label(procedure, state_info: StateSignal | None = None) -> str:
+        name = type(procedure).__name__
+        if state_info is not None:
+            extra = procedure.describe_start(state_info)
+            if extra:
+                return f"{name}: {extra}"
+        return name
 
     def _announce_action_start(self, action: Action):
         print(f"Starting action: {action.name}{tuple(action.args)}", flush=True)
@@ -136,15 +141,20 @@ class Controller:
     def _announce_action_done(self, action: Action):
         print(f"Finished action: {action.name}{tuple(action.args)}", flush=True)
 
-    def _announce_procedure_start(self, procedure, index: int):
+    def _announce_procedure_start(self, procedure, index: int, state_info: StateSignal):
         total = len(self.procedures)
         print(
-            f"Starting procedure {index + 1}/{total}: {self._procedure_label(procedure)}",
+            f"Starting procedure {index + 1}/{total}: {self._procedure_label(procedure, state_info)}",
             flush=True,
         )
 
-    def _announce_procedure_done(self, procedure):
-        print(f"Finished procedure: {self._procedure_label(procedure)}", flush=True)
+    def _announce_procedure_done(self, procedure, state_info: StateSignal):
+        extra = procedure.describe_finish(state_info)
+        label = type(procedure).__name__
+        if extra:
+            print(f"Finished procedure: {label} — {extra}", flush=True)
+        else:
+            print(f"Finished procedure: {label}", flush=True)
 
     def _setup_procedures_for_action(self, current_action: Action, state_info: StateSignal):
         raise NotImplementedError
@@ -166,19 +176,19 @@ class Controller:
             if self.procedures is None:
                 return sig
             self._announce_action_start(current_action)
-            self._announce_procedure_start(self.procedures[self.proc_id], self.proc_id)
+            self._announce_procedure_start(self.procedures[self.proc_id], self.proc_id, state_info)
 
         procedure = self.procedures[self.proc_id]
 
         if procedure.is_finished(state_info):
-            self._announce_procedure_done(procedure)
+            self._announce_procedure_done(procedure, state_info)
             self.proc_id += 1
             if self.proc_id >= len(self.procedures):
                 self.finish_action()
                 self.procedures = None
                 return sig
             procedure = self.procedures[self.proc_id]
-            self._announce_procedure_start(procedure, self.proc_id)
+            self._announce_procedure_start(procedure, self.proc_id, state_info)
 
         return procedure.adjust_signal(sig, state_info)
 

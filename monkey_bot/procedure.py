@@ -11,8 +11,27 @@ def normalize_angle(angle: float) -> float:
     return (angle + math.pi) % (2 * math.pi) - math.pi
 
 
+def format_limb_id(limb_id: int) -> str:
+    return str(limb_id + 1)
+
+
+def format_limb_list(limb_ids) -> str:
+    return ", ".join(format_limb_id(i) for i in limb_ids)
+
+
+def format_grid_point(coordinator: InstanceSimulationConfig, point: Vec2d) -> str:
+    gx, gy = coordinator.screen_to_grid(point)
+    return f"({gx},{gy})"
+
+
+def format_grid_distance(coordinator: InstanceSimulationConfig, a: Vec2d, b: Vec2d) -> str:
+    cells = (a - b).length / coordinator.cell_size
+    return f"{cells:.2f} cells"
+
+
 class Procedure:
     def __init__(self, coordinator: InstanceSimulationConfig):
+        self.coordinator = coordinator
         self.epsilon = coordinator.epsilon
         self.rotation_speed = coordinator.rotation_speed
         self.extension_speed = coordinator.extension_speed
@@ -21,7 +40,6 @@ class Procedure:
         self.dt = coordinator.dt
         self.max_extension = coordinator.max_extension
         self.min_extension = coordinator.min_extension
-        pass
 
     def adjust_signal(self, signal: ControlSignal, state_info):
         pass
@@ -29,18 +47,42 @@ class Procedure:
     def is_finished(self, state_info:StateSignal):
         pass
 
+    def describe_start(self, state_info: StateSignal) -> str | None:
+        return None
+
+    def describe_finish(self, state_info: StateSignal) -> str | None:
+        return None
+
+    def _log_phase(self, phase: str, message: str) -> None:
+        if getattr(self, "_phase", None) != phase:
+            self._phase = phase
+            print(message, flush=True)
+
 class GetCloser(Procedure):
-    def __init__(self, target_point, coordinator: InstanceSimulationConfig):
+    # Match DynamicCatch: gentle center shifts while legs stay gripped.
+    MOVE_CENTER_SPEED_FACTOR = 0.2
+
+    def __init__(
+        self,
+        target_point,
+        coordinator: InstanceSimulationConfig,
+        ignore_legs=None,
+    ):
         super().__init__(coordinator)
         self.target_point = target_point
-        self.move_center = MoveCenter(None, coordinator)
+        self.move_center = MoveCenter(None, coordinator, ignore_legs=ignore_legs)
+        self.move_center.move_center_speed *= self.MOVE_CENTER_SPEED_FACTOR
+        self.move_center.max_length_adjust_rate = self.extension_speed * 0.35
+
+    def is_active(self, state_info: StateSignal) -> bool:
+        return (state_info.center_pos - self.target_point).length > self.max_extension * 0.5
 
     def is_finished(self, state_info:StateSignal):
         return True
 
     def adjust_signal(self, signal: ControlSignal, state_info):
-        if (state_info.center_pos - self.target_point).length>self.max_extension*0.5:
-            self.move_center.goal_point = (state_info.center_pos + self.target_point)/2
+        if self.is_active(state_info):
+            self.move_center.goal_point = (state_info.center_pos + self.target_point) / 2
             signal = self.move_center.adjust_signal(signal, state_info)
         return signal
 
@@ -66,10 +108,43 @@ class AdjustLength(Procedure):
     def is_finished(self, state_info:StateSignal):
         return abs(self.curr_length(state_info) - self.goal_extension) < self.epsilon
 
+
+class GrooveSafeAdjustLength(AdjustLength):
+    """Extension toward a target without slamming the foot out of the leg groove."""
+
+    def __init__(
+        self,
+        limb_id,
+        goal_extension,
+        coordinator: InstanceSimulationConfig,
+        *,
+        speed_factor: float = 0.3,
+        max_error_gain: float = 1.2,
+    ):
+        super().__init__(limb_id, goal_extension, coordinator)
+        self.speed_factor = speed_factor
+        self.max_error_gain = max_error_gain
+
+    def adjust_signal(self, signal: ControlSignal, state_info):
+        curr = self.curr_length(state_info)
+        goal = min(self.goal_extension, self.max_extension * 0.92)
+        error = goal - curr
+        if abs(error) < self.epsilon:
+            return signal
+        max_rate = self.extension_speed * self.speed_factor
+        if curr >= self.max_extension * 0.9 and error > 0:
+            return signal
+        drive = max(-max_rate, min(max_rate, self.max_error_gain * error))
+        signal.extension[self.limb_id] = signal.extension[self.limb_id] + drive
+        return signal
+
 class ReleaseGrip(Procedure):
     def __init__(self, limb_id, coordinator):
         super().__init__(coordinator)
         self.limb_id = limb_id
+
+    def describe_start(self, state_info: StateSignal) -> str | None:
+        return f"releasing leg {format_limb_id(self.limb_id)}"
 
     def adjust_signal(self, signal: ControlSignal, state_info):
         if state_info.active_grips[self.limb_id]:
@@ -82,39 +157,143 @@ class ReleaseGrip(Procedure):
 
 class StabilizeLimbs(Procedure):
     """
-    Zero all leg rotation/extension commands and snap spring rest lengths to the
-    current leg lengths before a release or other disruptive action.
+    Smoothly damp body swing and relax gripped-leg springs before a release or
+    other disruptive action.
     """
 
     def __init__(
         self,
         coordinator: InstanceSimulationConfig,
         *,
-        settle_frames: int = 24,
-        angular_velocity_limit: float = 0.15,
+        settle_frames: int = 36,
+        angular_velocity_limit: float = 0.12,
+        kp: float = 2.0,
+        kd: float = 1.0,
+        max_correction_rate: float | None = None,
+        angle_deadband: float = 0.03,
+        velocity_deadband: float = 0.05,
+        smooth: float = 0.88,
     ):
         super().__init__(coordinator)
         self.settle_frames = settle_frames
         self.angular_velocity_limit = angular_velocity_limit
+        self.kp = kp
+        self.kd = kd
+        self.max_correction_rate = (
+            max_correction_rate
+            if max_correction_rate is not None
+            else coordinator.angle_rotation_speed * 0.4
+        )
+        self.angle_deadband = angle_deadband
+        self.velocity_deadband = velocity_deadband
+        self.smooth = smooth
         self._stable_frames = 0
-        self._springs_relaxed = False
+        self.ref_angle = None
+        self.prev_rotation = [0.0] * self.num_legs
+        self.prev_extension = [0.0] * self.num_legs
+        self._was_settling = False
+
+    def describe_start(self, state_info: StateSignal) -> str | None:
+        gripped = [
+            format_limb_id(i)
+            for i, g in enumerate(state_info.active_grips)
+            if g
+        ]
+        spin = state_info.body_angular_velocity
+        legs = f"legs {', '.join(gripped)}" if gripped else "no gripped legs"
+        return f"{legs} | body spin {spin:.3f} rad/s | need {self.settle_frames} calm frames"
+
+    def describe_finish(self, state_info: StateSignal) -> str | None:
+        spin = state_info.body_angular_velocity
+        drift = normalize_angle(state_info.body_angle - self.ref_angle) if self.ref_angle is not None else 0.0
+        return f"settled | spin {spin:.3f} rad/s | angle drift {math.degrees(drift):.1f}°"
+
+    def _update_status(self, state_info: StateSignal) -> None:
+        spin = abs(state_info.body_angular_velocity)
+        if spin > self.angular_velocity_limit:
+            if self._was_settling:
+                self._log_phase(
+                    "damping",
+                    f"StabilizeLimbs: spin {spin:.3f} rad/s — damping, settle counter reset",
+                )
+            else:
+                self._log_phase(
+                    "damping",
+                    f"StabilizeLimbs: damping body swing ({spin:.3f} rad/s)",
+                )
+            self._was_settling = False
+            return
+
+        if not self._was_settling:
+            self._log_phase(
+                "settling",
+                f"StabilizeLimbs: settling ({self.settle_frames} frames below {self.angular_velocity_limit:.2f} rad/s)",
+            )
+            self._was_settling = True
+
+        if self._stable_frames > 0 and self._stable_frames % 12 == 0:
+            remaining = self.settle_frames - self._stable_frames
+            if remaining > 0:
+                self._log_phase(
+                    f"settling-{self._stable_frames}",
+                    f"StabilizeLimbs: {remaining} calm frames remaining (spin {spin:.3f} rad/s)",
+                )
+
+    def _smooth_step(self, previous: float, target: float, max_step: float) -> float:
+        blended = self.smooth * previous + (1.0 - self.smooth) * target
+        return previous + max(-max_step, min(max_step, blended - previous))
 
     def adjust_signal(self, signal: ControlSignal, state_info: StateSignal):
+        self._update_status(state_info)
+
         if not signal.relax_spring:
             signal.relax_spring = [False] * self.num_legs
         if not signal.angle_lock:
             signal.angle_lock = [False] * self.num_legs
 
-        for limb_id in range(self.num_legs):
-            signal.rotation[limb_id] = 0.0
-            signal.extension[limb_id] = 0.0
-            signal.angle_lock[limb_id] = False
-
-        if not self._springs_relaxed:
+        if self.ref_angle is None:
+            self.ref_angle = state_info.body_angle
             for limb_id in range(self.num_legs):
-                if state_info.active_grips[limb_id]:
-                    signal.relax_spring[limb_id] = True
-            self._springs_relaxed = True
+                self.prev_rotation[limb_id] = signal.rotation[limb_id]
+                self.prev_extension[limb_id] = signal.extension[limb_id]
+
+        theta_err = normalize_angle(state_info.body_angle - self.ref_angle)
+        if (
+            abs(theta_err) < self.angle_deadband
+            and abs(state_info.body_angular_velocity) < self.velocity_deadband
+        ):
+            target_rotation = 0.0
+        else:
+            target_rotation = -self.kp * theta_err - self.kd * state_info.body_angular_velocity
+            target_rotation = max(
+                -self.max_correction_rate,
+                min(self.max_correction_rate, target_rotation),
+            )
+
+        max_rotation_step = self.max_correction_rate * self.dt
+        max_extension_step = self.extension_speed * self.dt
+
+        for limb_id in range(self.num_legs):
+            signal.relax_spring[limb_id] = True
+            if state_info.active_grips[limb_id]:
+                signal.angle_lock[limb_id] = False
+                rot = self._smooth_step(
+                    self.prev_rotation[limb_id], target_rotation, max_rotation_step
+                )
+            else:
+                # Pin free legs to the body so they don't whip while gripped legs damp spin.
+                signal.angle_lock[limb_id] = True
+                rot = self._smooth_step(
+                    self.prev_rotation[limb_id], 0.0, max_rotation_step
+                )
+            self.prev_rotation[limb_id] = rot
+            signal.rotation[limb_id] = rot
+
+            ext = self._smooth_step(
+                self.prev_extension[limb_id], 0.0, max_extension_step
+            )
+            self.prev_extension[limb_id] = ext
+            signal.extension[limb_id] = ext
 
         signal.damp_body = True
         return signal
@@ -323,6 +502,10 @@ class Grabber(Procedure):
 class AttachCatch(Procedure):
     """
     Reach toward a gripping point and retry grabbing until the foot latches on.
+
+    Runs in two sequential phases each attach:
+    1. MoveCenter (via GetCloser) on gripped legs only — shift body toward the GP.
+    2. Tracker + body hold + grab on the free leg — reach and latch.
     """
 
     def __init__(
@@ -334,18 +517,218 @@ class AttachCatch(Procedure):
     ):
         super().__init__(coordinator)
         self.limb_id = limb_id
-        self.get_closer = GetCloser(target_point, coordinator)
+        self.get_closer = GetCloser(target_point, coordinator, ignore_legs=[limb_id])
         self.tracker = Tracker(limb_id, target_point, coordinator)
+        self.tracker.length_adjuster = GrooveSafeAdjustLength(limb_id, None, coordinator)
         self.body_holder = SmoothBodyHolder(coordinator, *holding_limb_ids)
         self.grabber = Grabber(limb_id, target_point, coordinator)
+        self.target_point = target_point
+        self.holding_limb_ids = list(holding_limb_ids)
+        self._status_frame = 0
+        self._status_interval = 20
+        self._reach_phase = False
+
+    def _foot_dist(self, state_info: StateSignal) -> float:
+        return (state_info.feet_pos[self.limb_id] - self.target_point).length
+
+    def _foot_can_reach_gp(self, state_info: StateSignal) -> bool:
+        foot_dist = self._foot_dist(state_info)
+        center_dist = (state_info.center_pos - self.target_point).length
+        grip_slack = self.epsilon + self.coordinator.foot_radius
+
+        if foot_dist <= grip_slack:
+            return True
+
+        # Foot almost on GP — tracker can finish without shifting the body.
+        if foot_dist <= self.coordinator.cell_size * 1.25:
+            return True
+
+        # Body close enough that a leg can span the GP without a center shift.
+        return center_dist <= (self.max_extension - self.min_extension) * 0.92
+
+    def _move_center_needed(self, state_info: StateSignal) -> bool:
+        if self._foot_can_reach_gp(state_info):
+            return False
+        return self.get_closer.is_active(state_info)
+
+    def _begin_reach_phase(self, state_info: StateSignal, reason: str) -> None:
+        if self._reach_phase:
+            return
+        self._reach_phase = True
+        foot_cells = format_grid_distance(
+            self.coordinator,
+            state_info.feet_pos[self.limb_id],
+            self.target_point,
+        )
+        self._log_phase(
+            "reach_start",
+            f"AttachCatch: skipping MoveCenter ({reason}) — starting Tracker on leg "
+            f"{format_limb_id(self.limb_id)} (foot {foot_cells} from GP)",
+        )
+
+    def _in_pull_up_phase(self, state_info: StateSignal) -> bool:
+        if self._reach_phase:
+            return False
+        if not self._move_center_needed(state_info):
+            if self._foot_can_reach_gp(state_info):
+                self._begin_reach_phase(state_info, "foot already in reach")
+            else:
+                self._begin_reach_phase(state_info, "center close enough")
+            return False
+        return True
+
+    def _apply_pull_up_support(self, signal: ControlSignal, state_info: StateSignal) -> ControlSignal:
+        if not signal.relax_spring:
+            signal.relax_spring = [False] * self.num_legs
+        if not signal.angle_lock:
+            signal.angle_lock = [False] * self.num_legs
+
+        signal.angle_lock[self.limb_id] = True
+        signal.rotation[self.limb_id] = 0.0
+        signal.extension[self.limb_id] = 0.0
+
+        for limb_id in range(self.num_legs):
+            if state_info.active_grips[limb_id] and limb_id != self.limb_id:
+                signal.relax_spring[limb_id] = True
+
+        if abs(state_info.body_angular_velocity) > 2.0:
+            signal.damp_body = True
+        return signal
+
+    def _attach_mode(self, state_info: StateSignal) -> str:
+        if self._in_pull_up_phase(state_info):
+            return "pull-up (MoveCenter)"
+        return "reach (Tracker)"
+
+    def _format_leg_line(
+        self, state_info: StateSignal, signal: ControlSignal, limb_id: int
+    ) -> str:
+        grip = "G" if state_info.active_grips[limb_id] else "F"
+        length = (
+            (state_info.center_pos - state_info.feet_pos[limb_id]).length
+            / self.coordinator.cell_size
+        )
+        foot_gp = format_grid_point(self.coordinator, state_info.feet_pos[limb_id])
+        return (
+            f"L{format_limb_id(limb_id)}[{grip}] @ {foot_gp} "
+            f"len={length:.2f} rot={signal.rotation[limb_id]:+.2f} ext={signal.extension[limb_id]:+.2f}"
+        )
+
+    def _build_status(self, state_info: StateSignal, signal: ControlSignal) -> str:
+        mode = self._attach_mode(state_info)
+        target = format_grid_point(self.coordinator, self.target_point)
+        foot_dist = format_grid_distance(
+            self.coordinator,
+            state_info.feet_pos[self.limb_id],
+            self.target_point,
+        )
+        center_dist = format_grid_distance(
+            self.coordinator, state_info.center_pos, self.target_point
+        )
+        legs = " | ".join(
+            self._format_leg_line(state_info, signal, i)
+            for i in range(self.num_legs)
+        )
+        return (
+            f"AttachCatch [{mode}] leg {format_limb_id(self.limb_id)} → {target} "
+            f"(foot {foot_dist}, center {center_dist}) | "
+            f"body spin {state_info.body_angular_velocity:+.3f} rad/s | {legs}"
+        )
+
+    def _record_status(self, state_info: StateSignal, signal: ControlSignal) -> None:
+        import monkey_bot.runtime_debug as runtime_debug
+
+        runtime_debug.procedure_status = self._build_status(state_info, signal)
+
+    def _maybe_log_status(self, state_info: StateSignal, signal: ControlSignal) -> None:
+        self._status_frame += 1
+        if self._status_frame == 1 or self._status_frame % self._status_interval == 0:
+            print(self._build_status(state_info, signal), flush=True)
+
+    def describe_start(self, state_info: StateSignal) -> str | None:
+        target = format_grid_point(self.coordinator, self.target_point)
+        holding = format_limb_list(
+            i for i in self.holding_limb_ids if state_info.active_grips[i]
+        )
+        foot_dist = format_grid_distance(
+            self.coordinator,
+            state_info.feet_pos[self.limb_id],
+            self.target_point,
+        )
+        center_dist = format_grid_distance(
+            self.coordinator, state_info.center_pos, self.target_point
+        )
+        move = "MoveCenter then Tracker" if self._move_center_needed(state_info) else "Tracker only (foot in reach)"
+        return (
+            f"leg {format_limb_id(self.limb_id)} → GP {target} "
+            f"(foot {foot_dist} away, center {center_dist} away) | "
+            f"bracing legs {holding} | plan: {move}"
+        )
+
+    def describe_finish(self, state_info: StateSignal) -> str | None:
+        foot_dist = format_grid_distance(
+            self.coordinator,
+            state_info.feet_pos[self.limb_id],
+            self.target_point,
+        )
+        return f"leg {format_limb_id(self.limb_id)} latched at {foot_dist} from GP"
+
+    def _update_phase(self, state_info: StateSignal, signal: ControlSignal) -> None:
+        if self.is_finished(state_info):
+            return
+        foot_dist = (state_info.feet_pos[self.limb_id] - self.target_point).length
+        if self._in_pull_up_phase(state_info):
+            center_dist = format_grid_distance(
+                self.coordinator, state_info.center_pos, self.target_point
+            )
+            legs = " | ".join(
+                self._format_leg_line(state_info, signal, i)
+                for i in range(self.num_legs)
+            )
+            self._log_phase(
+                "pull_up",
+                f"AttachCatch: phase 1/2 MoveCenter — shifting body toward {format_grid_point(self.coordinator, self.target_point)} "
+                f"(center {center_dist} away) | {legs}",
+            )
+        elif foot_dist <= self.epsilon:
+            self._log_phase(
+                "grab",
+                f"AttachCatch: foot at GP, requesting grip on leg {format_limb_id(self.limb_id)}",
+            )
+        else:
+            foot_cells = format_grid_distance(
+                self.coordinator,
+                state_info.feet_pos[self.limb_id],
+                self.target_point,
+            )
+            legs = " | ".join(
+                self._format_leg_line(state_info, signal, i)
+                for i in range(self.num_legs)
+            )
+            self._log_phase(
+                "reach",
+                f"AttachCatch: phase 2/2 Tracker — leg {format_limb_id(self.limb_id)} reaching GP "
+                f"({foot_cells} away) | {legs}",
+            )
 
     def adjust_signal(self, signal: ControlSignal, state_info: StateSignal):
         if self.is_finished(state_info):
             return signal
-        signal = self.get_closer.adjust_signal(signal, state_info)
-        signal = self.tracker.adjust_signal(signal, state_info)
-        signal = self.body_holder.adjust_signal(signal, state_info)
-        return self.grabber.adjust_signal(signal, state_info)
+
+        if self._in_pull_up_phase(state_info):
+            signal = self.get_closer.adjust_signal(signal, state_info)
+            signal = self._apply_pull_up_support(signal, state_info)
+        else:
+            signal = self.tracker.adjust_signal(signal, state_info)
+            signal = self.body_holder.adjust_signal(signal, state_info)
+            signal = self.grabber.adjust_signal(signal, state_info)
+            if abs(state_info.body_angular_velocity) > 1.5:
+                signal.damp_body = True
+
+        self._update_phase(state_info, signal)
+        self._record_status(state_info, signal)
+        self._maybe_log_status(state_info, signal)
+        return signal
 
     def is_finished(self, state_info: StateSignal):
         return self.grabber.is_finished(state_info)
@@ -383,7 +766,8 @@ class Tracker(Procedure):
         self.angle_adjuster.target_point = target_point
 
     def adjust_signal(self, signal: ControlSignal, state_info: StateSignal):
-        self.length_adjuster.goal_extension = (self.target_point - state_info.center_pos).length
+        goal = (self.target_point - state_info.center_pos).length
+        self.length_adjuster.goal_extension = min(goal, self.max_extension * 0.92)
         signal = self.angle_adjuster.adjust_signal(signal, state_info)
         signal = self.length_adjuster.adjust_signal(signal, state_info)
         return signal
@@ -405,6 +789,7 @@ class MoveCenter(Procedure):
         self._prev_center_pos = None
         self.powerup = 1
         self.lag_tolerance_threshold = 0.1
+        self.max_length_adjust_rate: float | None = None
 
     def _calc_next_point(self, state_info:StateSignal):
         move_vec = (self.goal_point - state_info.center_pos)
@@ -425,7 +810,10 @@ class MoveCenter(Procedure):
         center_pos = state_info.center_pos
         next_frame_center = self._calc_next_point(state_info)
         next_move_vector = next_frame_center - center_pos
-        active_legs = [i for i, a in enumerate(state_info.active_grips) if a]
+        gripped_legs = [i for i, gripped in enumerate(state_info.active_grips) if gripped]
+        legs_to_drive = [
+            i for i in gripped_legs if i not in self.ignore_legs
+        ]
 
         if self._prev_center_pos:
             if (center_pos - self._prev_center_pos).length < self.move_center_speed*self.lag_tolerance_threshold:
@@ -439,21 +827,25 @@ class MoveCenter(Procedure):
         for length_adj, angle_adj in zip(self.length_adjusters, self.angle_adjusters):
             limb_id = length_adj.limb_id
 
-            if limb_id in active_legs:
-                next_foot_vec = state_info.feet_pos[limb_id] - aim_center
-                curr_foot_vec = state_info.feet_pos[limb_id] - center_pos
-                length_adj.goal_extension = max(self.min_extension, next_foot_vec.length)
-                length_adj.extension_speed = abs(next_foot_vec.length - curr_foot_vec.length) / self.dt
+            if limb_id not in legs_to_drive:
+                continue
 
-                angle_diff = next_foot_vec.get_angle_between(curr_foot_vec)
-                angle_adj.target_point = center_pos + next_foot_vec
-                angle_adj.extension_speed = - abs(angle_diff) / self.dt
-            else:
-                angle_adj.target_point = state_info.feet_pos[limb_id] # Keep leg from rotating aimlessly by pointing in the previous direction
+            next_foot_vec = state_info.feet_pos[limb_id] - aim_center
+            curr_foot_vec = state_info.feet_pos[limb_id] - center_pos
+            length_adj.goal_extension = max(self.min_extension, next_foot_vec.length)
+            rate = abs(next_foot_vec.length - curr_foot_vec.length) / self.dt
+            if self.max_length_adjust_rate is not None:
+                rate = min(rate, self.max_length_adjust_rate)
+            length_adj.extension_speed = rate
+
+            angle_diff = next_foot_vec.get_angle_between(curr_foot_vec)
+            angle_adj.target_point = center_pos + next_foot_vec
+            angle_adj.extension_speed = - abs(angle_diff) / self.dt
 
         for a_l, a_a in zip(self.length_adjusters, self.angle_adjusters):
-            if a_l.limb_id in active_legs:
-                signal = a_l.adjust_signal(signal, state_info)
+            if a_l.limb_id not in legs_to_drive:
+                continue
+            signal = a_l.adjust_signal(signal, state_info)
             signal = a_a.adjust_signal(signal, state_info)
 
         return signal
