@@ -75,6 +75,14 @@ class SpringMotor:
         if actual_length - self.spring.rest_length > 5:
             self.spring.rest_length = actual_length
 
+    def relax_to_current(self):
+        actual_length = min(
+            (self.spring.a.position - self.spring.b.position).length,
+            self.max_extension,
+        )
+        self.spring.rest_length = actual_length
+        self.extension_speed = 0
+
     def step(self, dt):
         if self.extension_speed== 0:
             return
@@ -108,6 +116,7 @@ class MonkeyBotSimulator:
         self.rotation_motors = []
         self.leg_springs = []
         self.leg_angle_locks = []
+        self.body_leg_angle_locks: list[pymunk.RotaryLimitJoint | None] = []
         self.leg_grooves = []
         self.spring_motors = []
         self.writer=None
@@ -117,6 +126,7 @@ class MonkeyBotSimulator:
         pygame.init()
         self.space = pymunk.Space()
         self.epsilon = coordinator.epsilon
+        self.grip_tolerance = coordinator.epsilon + coordinator.foot_radius
         self.space.gravity = (0, coordinator.gravity)
         self.simulation_name = coordinator.instance.name
         self.window = pygame.display.set_mode((self.sim_config.screen_width, self.sim_config.screen_height))
@@ -156,18 +166,22 @@ class MonkeyBotSimulator:
     def get_gp_pos(self, gp_i):
         return Vec2d(*self.grip_points[gp_i][0].position)
 
-    def check_and_grip(self, foot_index: int):
+    def check_and_grip(self, foot_index: int) -> bool:
         foot_body, _ = self.feet[foot_index]
         if self.active_grips[foot_index] is not None:
-            return
+            return True
+        tolerance = getattr(self, "grip_tolerance", self.epsilon)
         for i, (gp, _) in enumerate(self.grip_points):
             dist = (foot_body.position - gp.position).length
-            if dist <= self.epsilon:
-                self.active_grips[foot_index] = self._create_pivot_joint(foot_body, gp, gp.position)
-                return
-        raise Exception(f"Grip Failed for foot {foot_index}")
+            if dist <= tolerance:
+                self.active_grips[foot_index] = self._create_pivot_joint(
+                    foot_body, gp, gp.position
+                )
+                return True
+        return False
 
     def release_grip(self, i):
+        self.unlock_body_leg_angle(i)
         grip_joint = self.active_grips[i]
         if grip_joint is not None:
             self.spring_motors[i].calibrate()
@@ -183,6 +197,15 @@ class MonkeyBotSimulator:
         if goal_point is not None:
             goal_x, goal_y = goal_point
             self.goal_point = self.create_dot(goal_x, goal_y, (255,0,0, 100), 5)
+
+    def update_goal_point(self, goal_point):
+        if goal_point is None:
+            return
+        if self.goal_point is None:
+            self.create_goal_point(goal_point)
+            return
+        body, _ = self.goal_point
+        body.position = (goal_point.x, goal_point.y)
 
     def create_dot(self, x, y, color, radius):
         body = pymunk.Body(body_type=pymunk.Body.STATIC)
@@ -207,12 +230,14 @@ class MonkeyBotSimulator:
         return robot_body
 
     def _create_leg_body(self, start, direction, length, leg_thickness, mass):
-        leg_body = pymunk.Body(mass=mass, moment=0.01)
-        leg_body.position = start  # base of leg at body center
+        moment = pymunk.moment_for_segment(mass, (0, 0), (length, 0), leg_thickness)
+        leg_body = pymunk.Body(mass=mass, moment=moment)
+        leg_body.position = start
+        leg_body.angle = math.atan2(direction.y, direction.x)
         leg_body.elasticity = 0.5
         leg_body.friction = 0.5
-        # leg points toward foot
-        leg_shape = pymunk.Segment(leg_body, (0, 0), (direction.x * length, direction.y * length), leg_thickness)
+        # Leg extends along local +x from the hip pivot at (0, 0).
+        leg_shape = pymunk.Segment(leg_body, (0, 0), (length, 0), leg_thickness)
         leg_shape.mass = mass
         leg_shape.color = (0, 0, 255, 100)
         leg_shape.filter = pymunk.ShapeFilter(group=1)
@@ -245,42 +270,65 @@ class MonkeyBotSimulator:
         self.space.add(m.motor)
         return m
 
-    def _create_leg_groove(self, leg_body, foot_body, direction, max_extension):
+    def _create_leg_groove(self, leg_body, foot_body, max_extension):
         """
-        Creates a groove joint that lets the foot slide linearly
-        along the leg's axis (like a telescoping rod).
-
-        leg_body: the leg segment body
-        foot_body: the foot body
-        length: the leg length (defines the groove span)
+        Lets the foot slide linearly along the leg's local +x axis (telescoping rod).
         """
-        # Groove runs from leg base (0, 0) to tip (length, 0)
         groove_a = pymunk.Vec2d(0, 0)
-        groove_b = pymunk.Vec2d(max_extension*direction[0], max_extension*direction[1])
+        groove_b = pymunk.Vec2d(max_extension, 0)
         self.max_extension = max_extension
 
         groove_joint = pymunk.GrooveJoint(leg_body, foot_body, groove_a, groove_b, (0, 0))
-
         self.space.add(groove_joint)
-
         self.leg_grooves.append(groove_joint)
-
         return groove_joint
 
-    def _create_leg_spring(self, body, foot_body, length, stiffness, damping):
-        """
-        Creates:
-          1. A spring between the robot body and the foot (controls radial extension).
-          2. A groove joint along the leg's axis (allows the foot to slide along the leg).
-          3. A rotary limit joint to keep the foot's rotation aligned with the leg.
-        """
-        # --- Anchors ---
-        body_anchor = pymunk.Vec2d(0, 0)  # center of robot body
-        foot_anchor = pymunk.Vec2d(0, 0)  # center of foot
+    def _normalize_rel_angle(self, angle: float) -> float:
+        return (angle + math.pi) % (2 * math.pi) - math.pi
 
+    def _body_leg_rel_angle(self, leg_id: int) -> float:
+        body = self.body
+        leg = self.legs[leg_id][0]
+        return self._normalize_rel_angle(leg.angle - body.angle)
+
+    def lock_body_leg_angle(self, leg_id: int):
+        if self.body_leg_angle_locks[leg_id] is not None:
+            return
+        body = self.body
+        leg = self.legs[leg_id][0]
+        ref = self._body_leg_rel_angle(leg_id)
+        lock = pymunk.RotaryLimitJoint(body, leg, ref, ref)
+        lock.collide_bodies = False
+        self.space.add(lock)
+        self.body_leg_angle_locks[leg_id] = lock
+        self.rotation_motors[leg_id].desired_rate = 0
+
+    def unlock_body_leg_angle(self, leg_id: int):
+        lock = self.body_leg_angle_locks[leg_id]
+        if lock is None:
+            return
+        self.space.remove(lock)
+        self.body_leg_angle_locks[leg_id] = None
+
+    def is_body_leg_angle_locked(self, leg_id: int) -> bool:
+        return self.body_leg_angle_locks[leg_id] is not None
+
+    def _create_leg_foot_lock(self, leg_body, foot_body):
+        """Keep the foot aligned with the leg segment."""
+        lock = pymunk.RotaryLimitJoint(leg_body, foot_body, 0, 0)
+        self.space.add(lock)
+        self.leg_angle_locks.append(lock)
+        return lock
+
+    def _create_leg_spring(self, leg_body, foot_body, length, stiffness, damping):
+        """
+        Extension spring along the leg axis (hip to foot), not body to foot.
+        """
         spring = pymunk.DampedSpring(
-            body, foot_body,
-            body_anchor, foot_anchor,
+            leg_body,
+            foot_body,
+            pymunk.Vec2d(0, 0),
+            pymunk.Vec2d(0, 0),
             rest_length=length,
             stiffness=stiffness,
             damping=damping,
@@ -311,21 +359,57 @@ class MonkeyBotSimulator:
             m = self._create_rotation_motor(body, leg)
             self.rotation_motors.append(m)
 
-            self._create_leg_groove(leg, foot, direction, coordinator.max_extension)
-            spring = self._create_leg_spring(body, foot, length, coordinator.stiffness, coordinator.damping)
+            self._create_leg_groove(leg, foot, coordinator.max_extension)
+            self._create_leg_foot_lock(leg, foot)
+            spring = self._create_leg_spring(leg, foot, length, coordinator.stiffness, coordinator.damping)
             self.spring_motors.append(SpringMotor(spring, coordinator.min_extension , coordinator.max_extension))
 
             self.leg_constraints.append(leg_joint)
 
+        self.body_leg_angle_locks = [None] * len(self.legs)
         self.active_grips = [None for _ in enumerate(self.legs)]
         for i, _ in enumerate(self.feet):
             self.check_and_grip(i)
 
 
     def draw(self):
+        if not self._physics_is_valid():
+            return
         self.window.fill("white")
-        self.space.debug_draw(self.draw_options)
+        try:
+            self.space.debug_draw(self.draw_options)
+        except TypeError:
+            return
         pygame.display.update()
+
+    def _vec_is_finite(self, vec) -> bool:
+        return math.isfinite(vec.x) and math.isfinite(vec.y)
+
+    def _physics_is_valid(self) -> bool:
+        if self.body is None:
+            return True
+        if not self._vec_is_finite(self.body.position):
+            return False
+        if not math.isfinite(self.body.angle):
+            return False
+        if not math.isfinite(self.body.angular_velocity):
+            return False
+        for foot_body, _ in self.feet:
+            if not self._vec_is_finite(foot_body.position):
+                return False
+        for leg_body, _ in self.legs:
+            if not self._vec_is_finite(leg_body.position):
+                return False
+        return True
+
+    def _damp_body_motion(self, *, angular_factor: float = 0.85, linear_factor: float = 0.95):
+        self.body.angular_velocity *= angular_factor
+        self.body.velocity = self.body.velocity * linear_factor
+        for leg_body, _ in self.legs:
+            leg_body.angular_velocity *= angular_factor
+        for foot_body, _ in self.feet:
+            foot_body.angular_velocity *= angular_factor
+            foot_body.velocity = foot_body.velocity * linear_factor
 
     def create_boundaries(self, width, height):
         rects = [
@@ -354,21 +438,46 @@ class MonkeyBotSimulator:
         Apply control signal by setting angular and linear velocities,
         not by directly modifying positions.
         """
+        lock_commands = signal.angle_lock if signal.angle_lock else None
+        relax_commands = signal.relax_spring if signal.relax_spring else None
         for i, _ in enumerate(self.legs):
+            if relax_commands is not None and relax_commands[i]:
+                self.spring_motors[i].relax_to_current()
             if signal.grip[i] == 1:
                 self.check_and_grip(i)
             if signal.grip[i] == -1:
                 self.release_grip(i)
-            self.set_rotation_speed(i, signal.rotation[i])
+            if lock_commands is not None:
+                if lock_commands[i]:
+                    self.lock_body_leg_angle(i)
+                else:
+                    self.unlock_body_leg_angle(i)
+            if self.is_body_leg_angle_locked(i):
+                self.set_rotation_speed(i, 0)
+            else:
+                self.set_rotation_speed(i, signal.rotation[i])
             self.set_extension_speed(i, signal.extension[i])
+
+        if signal.damp_body:
+            self._damp_body_motion()
 
 
     def gone_wrong(self):
+        if not self._physics_is_valid():
+            return True
         return (self.body.position[0] < 0 or self.body.position[1] < 0 or
                 self.body.position[0] > self.sim_config.screen_width or
                 self.body.position[1] > self.sim_config.screen_height)
 
     def step(self):
+        if not self._physics_is_valid():
+            print("Simulation unstable (invalid physics state).", flush=True)
+            self.run = False
+            pygame.quit()
+            if self.writer is not None:
+                self.writer.close()
+            return
+
         for m in self.spring_motors:
             m.step(self.sim_config.dt)
         for m in self.rotation_motors:
@@ -389,6 +498,13 @@ class MonkeyBotSimulator:
         self.t += 1
         self.draw()
         self.space.step(self.sim_config.dt)
+        if not self._physics_is_valid():
+            print("Simulation became unstable after physics step.", flush=True)
+            self.run = False
+            pygame.quit()
+            if self.writer is not None:
+                self.writer.close()
+            return
         if getattr(self.sim_config, "realtime", True):
             self.clock.tick(self.sim_config.fps)
 

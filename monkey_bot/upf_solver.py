@@ -9,10 +9,7 @@ from monkey_bot.monkey_bot_problem_instance import MonkeyBotProblemInstance
 
 LEG_MIN_EXT = 0.25
 
-def tuple_to_str(tup, sep='_'):
-    if tup is None:
-        return 'None'
-    return sep.join([str(a) for a in tup])
+from monkey_bot.coords import parse_coord, parse_point_tokens, catch_points_str, tuple_to_str
 
 def dist_prec(x1, y1, x2, y2, val):
     return LE(get_dist_squard_fluent(x1,y1,x2,y2), Times(val, val))
@@ -184,7 +181,7 @@ def get_simplified_problem(instance:MonkeyBotProblemInstance, transition_links):
 
     for i, (p_jump1, p_jump2, p_catch) in enumerate(transition_links):
 
-        p_catch_str = tuple_to_str([tuple_to_str(c) for c in p_catch])
+        p_catch_str = catch_points_str(p_catch)
         action_name = f'use_TL__from__{tuple_to_str(p_jump1)}__{tuple_to_str(p_jump2)}__to__{p_catch_str}'
         transition_action = InstantaneousAction(action_name)
 

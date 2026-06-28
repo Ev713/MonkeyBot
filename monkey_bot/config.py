@@ -1,9 +1,24 @@
 import math
 from dataclasses import dataclass
+from typing import Optional
 
 from pymunk import Vec2d
 
 from monkey_bot.monkey_bot_problem_instance import MonkeyBotProblemInstance
+from monkey_bot.coords import Point2D, normalize_point, parse_coord
+
+
+def fit_cell_size(
+    instance: MonkeyBotProblemInstance,
+    screen_width: float,
+    screen_height: float,
+    *,
+    margin_px: float = 80,
+) -> float:
+    """Pick a cell size so the instance grid fills the screen with margin."""
+    usable_w = max(screen_width - 2 * margin_px, 1)
+    usable_h = max(screen_height - 2 * margin_px, 1)
+    return min(usable_w / instance.grid_size_x, usable_h / instance.grid_size_y)
 
 
 @dataclass
@@ -12,7 +27,7 @@ class SimConfig:
     screen_width:int
     fps:int
     gravity:float=0.5
-    cell_size: float = 50
+    cell_size: Optional[float] = None
     render_scale: float = 1
     realtime: bool = True
 
@@ -39,9 +54,10 @@ class RobotConfig:
     body_radius:float = 0.1
     max_takeoff_speed:float = 10
     max_jump_dist: float = 3
-    prune_short_jumps:bool=True,
-    prune_in_clique_jumps:bool=True,
-    prune_similar_jumps:bool=True,
+    prune_short_jumps: bool = True
+    prune_in_clique_jumps: bool = True
+    prune_similar_jumps: bool = True
+    angle_rotation_speed: Optional[float] = None
 
 
 
@@ -66,18 +82,38 @@ class InstanceSimulationConfig:
 
         return Vec2d(screen_x, screen_y)
 
+    def screen_to_grid(self, screen_pos: Vec2d) -> Point2D:
+        """Convert screen coordinates to grid/world coordinates."""
+        cell_size = self.cell_size
+        center_x = self.sim_config.screen_width / 2
+        center_y = self.sim_config.screen_height / 2
+        gx = (screen_pos.x - center_x) / cell_size + self.instance.grid_size_x / 2
+        gy = -(screen_pos.y - center_y) / cell_size + self.instance.grid_size_y / 2
+        gx = max(0.0, min(float(self.instance.grid_size_x), gx))
+        gy = max(0.0, min(float(self.instance.grid_size_y), gy))
+        return normalize_point((gx, gy))
+
     @property
     def cell_size(self):
-        return self.sim_config.cell_size
+        explicit = self.sim_config.cell_size
+        if explicit is not None:
+            return explicit
+        return fit_cell_size(
+            self.instance,
+            self.sim_config.screen_width,
+            self.sim_config.screen_height,
+        )
 
     def max_jump_dist(self):
         return self.robot_config.max_jump_dist*self.cell_size
 
     def gp_name_to_screen_point(self, gp_name):
-        gp_x = int(gp_name.split('_')[1])
-        gp_y = int(gp_name.split('_')[2])
-        assert (gp_x, gp_y) in self.instance.gripping_points
-        return self.grid_to_screen(gp_x, gp_y)
+        parts = gp_name.split("_")
+        gp = (parse_coord(parts[1]), parse_coord(parts[2]))
+        resolved = self.instance.resolve_grip_point(gp)
+        if resolved is None:
+            raise ValueError(f"Unknown gripping point {gp} in action name {gp_name}")
+        return self.grid_to_screen(*resolved)
 
     @property
     def num_legs(self):
@@ -121,7 +157,7 @@ class InstanceSimulationConfig:
 
     @property
     def leg_thickness(self):
-        return self.robot_config.leg_thickness* self.cell_size
+        return self.robot_config.leg_thickness * self.cell_size
 
     @property
     def min_extension(self):
@@ -129,11 +165,11 @@ class InstanceSimulationConfig:
 
     @property
     def foot_radius(self):
-        return self.robot_config.foot_radius*self.cell_size
+        return self.robot_config.foot_radius * self.cell_size
 
     @property
     def body_radius(self):
-        return self.robot_config.body_radius*self.cell_size
+        return self.robot_config.body_radius * self.cell_size
 
     @property
     def extension_speed(self):
@@ -145,6 +181,12 @@ class InstanceSimulationConfig:
 
     @property
     def rotation_speed(self):
+        return self.robot_config.rotation_speed
+
+    @property
+    def angle_rotation_speed(self):
+        if self.robot_config.angle_rotation_speed is not None:
+            return self.robot_config.angle_rotation_speed
         return self.robot_config.rotation_speed
 
     @property

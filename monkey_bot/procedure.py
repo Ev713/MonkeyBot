@@ -80,21 +80,69 @@ class ReleaseGrip(Procedure):
         return not state_info.active_grips[self.limb_id]
 
 
+class StabilizeLimbs(Procedure):
+    """
+    Zero all leg rotation/extension commands and snap spring rest lengths to the
+    current leg lengths before a release or other disruptive action.
+    """
+
+    def __init__(
+        self,
+        coordinator: InstanceSimulationConfig,
+        *,
+        settle_frames: int = 24,
+        angular_velocity_limit: float = 0.15,
+    ):
+        super().__init__(coordinator)
+        self.settle_frames = settle_frames
+        self.angular_velocity_limit = angular_velocity_limit
+        self._stable_frames = 0
+        self._springs_relaxed = False
+
+    def adjust_signal(self, signal: ControlSignal, state_info: StateSignal):
+        if not signal.relax_spring:
+            signal.relax_spring = [False] * self.num_legs
+        if not signal.angle_lock:
+            signal.angle_lock = [False] * self.num_legs
+
+        for limb_id in range(self.num_legs):
+            signal.rotation[limb_id] = 0.0
+            signal.extension[limb_id] = 0.0
+            signal.angle_lock[limb_id] = False
+
+        if not self._springs_relaxed:
+            for limb_id in range(self.num_legs):
+                if state_info.active_grips[limb_id]:
+                    signal.relax_spring[limb_id] = True
+            self._springs_relaxed = True
+
+        signal.damp_body = True
+        return signal
+
+    def is_finished(self, state_info: StateSignal):
+        if abs(state_info.body_angular_velocity) > self.angular_velocity_limit:
+            self._stable_frames = 0
+            return False
+        self._stable_frames += 1
+        return self._stable_frames >= self.settle_frames
+
+
 class AdjustAngle(Procedure):
     def __init__(self, limb_id, target_point: Vec2d, coordinator: InstanceSimulationConfig):
         super().__init__(coordinator)
         self.limb_id = limb_id
         self.target_point = target_point
+        self.angle_rotation_speed = coordinator.angle_rotation_speed
 
     def adjust_signal(self, signal: ControlSignal, state_info):
-        if self.rotation_speed is None:
+        if self.angle_rotation_speed is None:
             raise Exception("Rotation speed unfilled")
         active_grips = [g for g in state_info.active_grips if g]
         if len(active_grips)==1:
             return signal
         d = self.curr_angle_difference(state_info)
         sign = -1 if d > 0 else 1
-        signal.rotation[self.limb_id] = sign*self.rotation_speed
+        signal.rotation[self.limb_id] = sign * self.angle_rotation_speed
         return signal
 
     def curr_angle_difference(self, state_info):
@@ -109,31 +157,31 @@ class AdjustAngle(Procedure):
         return abs(self.curr_angle_difference(state_info)) <= self.epsilon
 
 class SmoothAdjustAngle(AdjustAngle):
-    def __init__(self, limb_id, target_point: Vec2d, coordinator: InstanceSimulationConfig, acceleration_rate=1):
+    def __init__(self, limb_id, target_point: Vec2d, coordinator: InstanceSimulationConfig, acceleration_rate=0.35):
         super().__init__(limb_id, target_point, coordinator)
         self.prev_abs_rate = 0
         self.acceleration_rate = acceleration_rate
 
     def adjust_signal(self, signal: ControlSignal, state_info):
-        if self.rotation_speed is None:
+        if self.angle_rotation_speed is None:
             raise Exception("Rotation speed unfilled")
 
         d = self.curr_angle_difference(state_info)
         sign = -1 if d > 0 else 1
-        desired_rate = self.rotation_speed
+        desired_rate = self.angle_rotation_speed
         final_rate = desired_rate
         if self.acceleration_rate > 0:
             acceleration_limited_speed = self.prev_abs_rate + self.acceleration_rate * self.dt
             required_stop_abs_rate = math.sqrt(2 * self.acceleration_rate * abs(d))
 
             if self.prev_abs_rate > required_stop_abs_rate:
-                decceleration_limited_rate = self.prev_abs_rate - self.rotation_speed * self.dt
+                decceleration_limited_rate = self.prev_abs_rate - self.angle_rotation_speed * self.dt
             else:
                 decceleration_limited_rate = acceleration_limited_speed
             final_rate = min(desired_rate, acceleration_limited_speed, decceleration_limited_rate)
 
         self.prev_abs_rate = final_rate
-        signal.rotation[self.limb_id] = sign*final_rate
+        signal.rotation[self.limb_id] = sign * final_rate
         return signal
 
 class MultiOptionalDynamicCatch(Procedure):
@@ -260,13 +308,47 @@ class Grabber(Procedure):
         self.target_point = target_point
 
     def adjust_signal(self, signal: ControlSignal, state_info):
-        d = (state_info.feet_pos[self.limb_id] - self.target_point).length
-        if abs(d) < self.epsilon:
+        if state_info.active_grips[self.limb_id]:
+            return signal
+        foot_pos = state_info.feet_pos[self.limb_id]
+        d = (foot_pos - self.target_point).length
+        if d <= self.epsilon:
             signal.grip[self.limb_id] = 1
         return signal
 
     def is_finished(self, state_info:StateSignal):
-        return state_info.active_grips[self.limb_id] == 1
+        return state_info.active_grips[self.limb_id]
+
+
+class AttachCatch(Procedure):
+    """
+    Reach toward a gripping point and retry grabbing until the foot latches on.
+    """
+
+    def __init__(
+        self,
+        limb_id: int,
+        target_point: Vec2d,
+        coordinator: InstanceSimulationConfig,
+        holding_limb_ids: tuple[int, ...] | list[int],
+    ):
+        super().__init__(coordinator)
+        self.limb_id = limb_id
+        self.get_closer = GetCloser(target_point, coordinator)
+        self.tracker = Tracker(limb_id, target_point, coordinator)
+        self.body_holder = SmoothBodyHolder(coordinator, *holding_limb_ids)
+        self.grabber = Grabber(limb_id, target_point, coordinator)
+
+    def adjust_signal(self, signal: ControlSignal, state_info: StateSignal):
+        if self.is_finished(state_info):
+            return signal
+        signal = self.get_closer.adjust_signal(signal, state_info)
+        signal = self.tracker.adjust_signal(signal, state_info)
+        signal = self.body_holder.adjust_signal(signal, state_info)
+        return self.grabber.adjust_signal(signal, state_info)
+
+    def is_finished(self, state_info: StateSignal):
+        return self.grabber.is_finished(state_info)
 
 class ReleaseAtPoint(Procedure):
     def __init__(self, tolerance, target_point, coordinator: InstanceSimulationConfig):
@@ -472,6 +554,169 @@ class BodyHolder(Procedure):
 
     def is_finished(self, state_info: StateSignal):
         return True
+
+
+class SmoothBodyHolder(Procedure):
+    """
+    Gently and smoothly nudge gripped legs to counter body rotation while a free
+    leg moves. Uses low gains, a deadband, and hard rate limits so holding legs
+    stay in their grooves instead of fighting the physics.
+    """
+
+    def __init__(
+        self,
+        coordinator: InstanceSimulationConfig,
+        *holding_limb_ids: int,
+        kp: float = 1.5,
+        kd: float = 0.5,
+        max_correction_rate: float | None = None,
+        angle_deadband: float = 0.05,
+        velocity_deadband: float = 0.05,
+        smooth: float = 0.9,
+        eps: float = 1e-6,
+    ):
+        super().__init__(coordinator)
+        self.holding_limb_ids = holding_limb_ids
+        self.kp = kp
+        self.kd = kd
+        self.max_correction_rate = (
+            max_correction_rate
+            if max_correction_rate is not None
+            else coordinator.angle_rotation_speed * 0.35
+        )
+        self.angle_deadband = angle_deadband
+        self.velocity_deadband = velocity_deadband
+        self.smooth = smooth
+        self.eps = eps
+        self.ref_angle = None
+        self.prev_rotation = 0.0
+
+    def _smooth_step(self, previous: float, target: float, max_step: float) -> float:
+        blended = self.smooth * previous + (1.0 - self.smooth) * target
+        return previous + max(-max_step, min(max_step, blended - previous))
+
+    def adjust_signal(self, signal: ControlSignal, state_info: StateSignal):
+        if signal.angle_lock:
+            for limb_id in self.holding_limb_ids:
+                signal.angle_lock[limb_id] = False
+
+        active_holders = [
+            limb_id for limb_id in self.holding_limb_ids
+            if state_info.active_grips[limb_id]
+        ]
+        if not active_holders or not free_limb_is_rotating(signal, state_info, self.eps):
+            self.ref_angle = None
+            self.prev_rotation = self._smooth_step(
+                self.prev_rotation, 0.0, self.max_correction_rate * self.dt
+            )
+            for limb_id in active_holders:
+                signal.rotation[limb_id] = self.prev_rotation
+            return signal
+
+        if self.ref_angle is None:
+            self.ref_angle = state_info.body_angle
+
+        theta_err = normalize_angle(state_info.body_angle - self.ref_angle)
+        if (
+            abs(theta_err) < self.angle_deadband
+            and abs(state_info.body_angular_velocity) < self.velocity_deadband
+        ):
+            target_rotation = 0.0
+        else:
+            target_rotation = -self.kp * theta_err - self.kd * state_info.body_angular_velocity
+            target_rotation = max(
+                -self.max_correction_rate,
+                min(self.max_correction_rate, target_rotation),
+            )
+
+        max_rate_step = self.max_correction_rate * self.dt
+        self.prev_rotation = self._smooth_step(
+            self.prev_rotation, target_rotation, max_rate_step
+        )
+
+        for limb_id in active_holders:
+            signal.rotation[limb_id] = self.prev_rotation
+
+        return signal
+
+    def is_finished(self, state_info: StateSignal):
+        return True
+
+
+class BodyHolderAngleLock(Procedure):
+    """
+    Keep gripped legs fixed relative to the body using pymunk angle locks,
+    instead of driving rotation motors to compensate body spin.
+    """
+
+    def __init__(
+        self,
+        coordinator: InstanceSimulationConfig,
+        *holding_limb_ids: int,
+        extension_kp: float = 6.0,
+        extension_power: float = 1.0,
+        smooth: float = 0.75,
+        eps: float = 1e-6,
+        length_eps: float = 0.3,
+    ):
+        super().__init__(coordinator)
+        self.holding_limb_ids = holding_limb_ids
+        self.extension_kp = extension_kp
+        self.extension_power = extension_power
+        self.smooth = smooth
+        self.eps = eps
+        self.length_eps = length_eps
+        self.ref_lengths: dict[int, float] = {}
+        self.prev_extension: dict[int, float] = {}
+
+    def _smooth_step(self, previous, target, max_step):
+        blended = self.smooth * previous + (1.0 - self.smooth) * target
+        return previous + max(-max_step, min(max_step, blended - previous))
+
+    def adjust_signal(self, signal: ControlSignal, state_info: StateSignal):
+        if not signal.angle_lock:
+            signal.angle_lock = [False] * self.num_legs
+
+        for limb_id in self.holding_limb_ids:
+            signal.angle_lock[limb_id] = False
+            signal.rotation[limb_id] = 0.0
+
+        active_holders = [
+            limb_id for limb_id in self.holding_limb_ids
+            if state_info.active_grips[limb_id]
+        ]
+        if not active_holders or not free_limb_is_rotating(signal, state_info, self.eps):
+            self.ref_lengths.clear()
+            self.prev_extension.clear()
+            return signal
+
+        max_extension = self.extension_speed * self.extension_power
+        max_extension_step = max_extension * 3.0 * self.dt
+
+        for limb_id in active_holders:
+            signal.angle_lock[limb_id] = True
+            signal.rotation[limb_id] = 0.0
+
+            current_length = limb_length(state_info, limb_id)
+            if limb_id not in self.ref_lengths:
+                self.ref_lengths[limb_id] = current_length
+
+            length_deficit = self.ref_lengths[limb_id] - current_length
+            prev_ext = self.prev_extension.get(limb_id, 0.0)
+            if length_deficit > self.length_eps:
+                target_extension = min(max_extension, self.extension_kp * length_deficit)
+            else:
+                target_extension = 0.0
+
+            smoothed_extension = self._smooth_step(prev_ext, target_extension, max_extension_step)
+            self.prev_extension[limb_id] = smoothed_extension
+            signal.extension[limb_id] = signal.extension[limb_id] + smoothed_extension
+
+        return signal
+
+    def is_finished(self, state_info: StateSignal):
+        return True
+
 
 class Mixed(Procedure):
     def __init__(self, procs:List[Procedure], coordinator, finish_at_any = False):

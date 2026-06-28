@@ -1,35 +1,47 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Tuple, cast
+from typing import List, Optional, Tuple
+
+from monkey_bot.coords import Point2D, as_float, format_coord, grid_distance, normalize_point, parse_coord, parse_point_tokens, tuple_to_str
 
 
 @dataclass
 class MonkeyBotProblemInstance:
-    name:str
-    max_extension: int
-    grid_size_x: int
-    grid_size_y: int
-    gripping_points: List[Tuple[int, int]]
-    goal_point: Tuple[int, int]
-    init_center: Tuple[int, int]
-    init_feet: List[Tuple[int, int]]
-    allowed_jump_configs: List
+    name: str
+    max_extension: float
+    grid_size_x: float
+    grid_size_y: float
+    gripping_points: List[Point2D]
+    goal_point: Point2D
+    init_center: Point2D
+    init_feet: List[Point2D]
+    allowed_jump_configs: Optional[list] = None
+    _gp_index: dict[Point2D, Point2D] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self):
+        self.max_extension = float(self.max_extension)
+        self.grid_size_x = float(self.grid_size_x)
+        self.grid_size_y = float(self.grid_size_y)
+        self.goal_point = normalize_point(self.goal_point)
+        self.init_center = normalize_point(self.init_center)
+        self.gripping_points = [normalize_point(p) for p in self.gripping_points]
+        self.init_feet = [normalize_point(p) for p in self.init_feet]
+        self._gp_index = {gp: gp for gp in self.gripping_points}
 
     @classmethod
     def from_dict(cls, data: dict) -> "MonkeyBotProblemInstance":
         return cls(
-            name = str(data["name"]),
-            max_extension=int(data["leg_extension"]),
-            grid_size_x=int(data["grid_size_x"]),
-            grid_size_y=int(data["grid_size_y"]),
-            goal_point=cast(Tuple[int, int], tuple(data["goal_point"])),
-            init_center=cast(Tuple[int, int], tuple(data["init_center"])),
-            init_feet=[cast(Tuple[int, int], tuple(p)) for p in data["init_feet"]],
-            gripping_points=[cast(Tuple[int, int], tuple(p)) for p in data["gripping_points"]],
-            allowed_jump_configs = None
+            name=str(data["name"]),
+            max_extension=as_float(data["leg_extension"]),
+            grid_size_x=as_float(data["grid_size_x"]),
+            grid_size_y=as_float(data["grid_size_y"]),
+            goal_point=tuple(data["goal_point"]),
+            init_center=tuple(data["init_center"]),
+            init_feet=[tuple(p) for p in data["init_feet"]],
+            gripping_points=[tuple(p) for p in data["gripping_points"]],
+            allowed_jump_configs=None,
         )
-
 
     def to_dict(self) -> dict:
         return {
@@ -42,6 +54,10 @@ class MonkeyBotProblemInstance:
             "init_center": list(self.init_center),
             "init_feet": [list(p) for p in self.init_feet],
         }
+
+    def resolve_grip_point(self, point: Point2D) -> Optional[Point2D]:
+        key = normalize_point(point)
+        return self._gp_index.get(key)
 
     @classmethod
     def _from_json(cls, s: str) -> "MonkeyBotProblemInstance":
@@ -58,21 +74,55 @@ class MonkeyBotProblemInstance:
 
     def to_json_file(self, path: Path | str, **kwargs):
         with open(path, "w") as f:
-            json.dump(self.to_dict(), f, **kwargs)
+            json.dump(self.to_dict(), f, indent=2, **kwargs)
 
-def load_instance(name: str, instances_folder: str | Path | None = None) -> MonkeyBotProblemInstance:
+
+def load_instance(name: str, instances_folder: str | Path = "instances") -> MonkeyBotProblemInstance:
     path = Path(instances_folder) / f"{name}.json"
     return MonkeyBotProblemInstance.from_json_file(path)
 
-def increase_scale(instance:MonkeyBotProblemInstance, c):
-    instance.grid_size_x *= c
-    instance.grid_size_y *= c
-    instance.gripping_points = [(x*c, y*c) for x, y in instance.gripping_points ]
-    instance.init_center = (instance.init_center[0]*c, instance.init_center[1]*c)
-    instance.goal_point = (instance.goal_point[0]*c, instance.goal_point[1]*c)
-    instance.max_extension *= c
-    instance.init_feet = [(x*c, y*c) for x, y in instance.init_feet ]
-    return instance
 
-def list_instances(instances_folder: str | Path | None = None) -> list[str]:
+def snapshot_instance(
+    base: MonkeyBotProblemInstance,
+    *,
+    init_center: Point2D,
+    init_feet: List[Point2D],
+    goal_point: Point2D,
+) -> MonkeyBotProblemInstance:
+    """Return a copy of *base* with updated start state and goal."""
+    return MonkeyBotProblemInstance(
+        name=base.name,
+        max_extension=base.max_extension,
+        grid_size_x=base.grid_size_x,
+        grid_size_y=base.grid_size_y,
+        gripping_points=list(base.gripping_points),
+        goal_point=goal_point,
+        init_center=init_center,
+        init_feet=list(init_feet),
+        allowed_jump_configs=base.allowed_jump_configs,
+    )
+
+
+def scale_instance(instance: MonkeyBotProblemInstance, factor: float) -> MonkeyBotProblemInstance:
+    """Scale all spatial fields uniformly (coordinates and leg reach)."""
+    if factor <= 0:
+        raise ValueError("scale factor must be positive")
+    return MonkeyBotProblemInstance(
+        name=instance.name,
+        max_extension=instance.max_extension * factor,
+        grid_size_x=instance.grid_size_x * factor,
+        grid_size_y=instance.grid_size_y * factor,
+        gripping_points=[(x * factor, y * factor) for x, y in instance.gripping_points],
+        goal_point=(instance.goal_point[0] * factor, instance.goal_point[1] * factor),
+        init_center=(instance.init_center[0] * factor, instance.init_center[1] * factor),
+        init_feet=[(x * factor, y * factor) for x, y in instance.init_feet],
+        allowed_jump_configs=instance.allowed_jump_configs,
+    )
+
+
+def increase_scale(instance: MonkeyBotProblemInstance, c: float) -> MonkeyBotProblemInstance:
+    return scale_instance(instance, c)
+
+
+def list_instances(instances_folder: str | Path = "instances") -> list[str]:
     return [p.stem for p in Path(instances_folder).glob("*.json")]

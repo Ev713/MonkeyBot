@@ -5,7 +5,8 @@ from unified_planning.shortcuts import OneshotPlanner
 # --- Assuming necessary imports from your project ---
 from monkey_bot.robot_controller import Controller
 from monkey_bot.config import InstanceSimulationConfig, SimConfig, RobotConfig
-from monkey_bot.upf_solver import get_problem, solve_problem, solve_problem_with_results, get_simplified_problem
+from monkey_bot.upf_solver import get_problem, solve_problem_with_results
+from monkey_bot.simplified_graph_planner import SimplifiedGraphPlanner
 from monkey_bot.monkey_bot_problem_instance import load_instance
 from pathlib import Path
 import time
@@ -83,21 +84,27 @@ def analyze_pruning_combinations(instance_name: str, instances_folder: str = "in
         pruning_times[pruning_name] = {"Transition Generation Time (s)": pruning_time,
                                        "Transitions Generated": num_transitions}
 
-        # --- Stage 2: UPF Problem Solving ---
+        # --- Stage 2: Planning ---
+        solving_start_time = time.perf_counter()
         if simplified:
-            problem = get_simplified_problem(instance, transition_links)
+            planner = SimplifiedGraphPlanner(instance, transition_links)
+            plan = planner.solve(timeout=TIMEOUT)
+            planner_metrics = {}
         else:
             problem = get_problem(instance, transition_links)
-
-        solving_start_time = time.perf_counter()
-        result = solve_problem_with_results(problem, timeout=TIMEOUT)
+            result = solve_problem_with_results(problem, timeout=TIMEOUT)
+            planner_metrics = result.metrics if result.metrics else {}
+            plan = result.plan
         solving_time = time.perf_counter() - solving_start_time
 
-        planner_metrics = result.metrics if result.metrics else {}
-        plan = result.plan
-
-        # Collect data
-        plan_length = len(plan.actions) if plan and plan.kind == PlanKind.SEQUENTIAL_PLAN else 'N/A'
+        if simplified:
+            plan_length = len(plan.actions) if plan else "N/A"
+            result_status = "SOLVED" if plan else "FAILED"
+        else:
+            plan_length = (
+                len(plan.actions) if plan and plan.kind == PlanKind.SEQUENTIAL_PLAN else "N/A"
+            )
+            result_status = result.status.name
 
         # --- Dynamic Data Collection ---
         entry = {
@@ -105,7 +112,7 @@ def analyze_pruning_combinations(instance_name: str, instances_folder: str = "in
             "Transitions Generated": num_transitions,
             "Plan Length": plan_length,
             "Solving Time (s) (Manual)": solving_time,
-            "Result Status": result.status.name,
+            "Result Status": result_status,
         }
 
         # Dynamically add all key-value pairs from the planner's metrics dictionary

@@ -7,3 +7,6 @@ pyparsing~=3.2.5
 pymunk~=7.2.0
 pygame~=2.6.1
 ImageIO~=2.37.2
+optuna~=4.6.0
+shapely~=2.1.2
+smallestenclosingcircle~=0.0.1
