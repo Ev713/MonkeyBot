@@ -615,12 +615,12 @@ class MonkeyBotSimulator:
                 ext_cmd = f"{self._last_signal.extension[i]:+.3f}"
             motor_rate = self.rotation_motors[i].desired_rate
             ext_rate = self.spring_motors[i].extension_speed
-            grip = "GRIPPED" if self.active_grips[i] is not None else "free"
+            grip = "GRIPPED" if self.active_grips[i] is not None else "no grip"
             print(
                 f"leg {leg_num} [{grip}]: "
                 f"foot {self._format_grid_pos(foot_body.position)} "
                 f"foot_vel={self._format_speed(foot_speed)} | "
-                f"segment_vel={self._format_speed(leg_speed)} | "
+                f"leg_segment_vel={self._format_speed(leg_speed)} | "
                 f"spring {actual_len / cell:.2f}/{rest_len / cell:.2f} cells "
                 f"(actual/rest) | "
                 f"cmd rot={rot_cmd} ext={ext_cmd} | "

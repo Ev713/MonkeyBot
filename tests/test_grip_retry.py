@@ -111,7 +111,7 @@ class GripRetryTest(unittest.TestCase):
         max_rate = catcher.extension_speed * 0.3
         self.assertLessEqual(abs(out.extension[1]), max_rate + 1e-6)
 
-    def test_pull_up_locks_attach_leg_and_relaxes_gripped_legs(self):
+    def test_pull_up_zeros_attach_leg_motors(self):
         gp = self.coordinator.grid_to_screen(4, 12)
         catcher = AttachCatch(1, gp, self.coordinator, (0, 2))
         far_center = StateSignal(
@@ -122,13 +122,10 @@ class GripRetryTest(unittest.TestCase):
             body_angular_velocity=3.0,
         )
         out = catcher.adjust_signal(empty_control_signal(3), far_center)
-        self.assertTrue(out.angle_lock[1])
         self.assertEqual(out.rotation[1], 0.0)
         self.assertEqual(out.extension[1], 0.0)
-        self.assertTrue(out.relax_spring[0])
-        self.assertFalse(out.relax_spring[1])
-        self.assertTrue(out.relax_spring[2])
-        self.assertTrue(out.damp_body)
+        self.assertNotEqual(out.extension[0], 0.0)
+        self.assertNotEqual(out.extension[2], 0.0)
 
     def test_attach_catch_skips_tracker_and_body_holder_during_move_center(self):
         gp = self.coordinator.grid_to_screen(4, 12)

@@ -157,8 +157,10 @@ class ReleaseGrip(Procedure):
 
 class StabilizeLimbs(Procedure):
     """
-    Smoothly damp body swing and relax gripped-leg springs before a release or
-    other disruptive action.
+    Damp body swing and relax leg springs before a release or other disruptive action.
+
+    Sets rotation and extension motor rates to zero on all legs — no pymunk angle
+    locks, which can snap when added or removed under load.
     """
 
     def __init__(
@@ -189,7 +191,6 @@ class StabilizeLimbs(Procedure):
         self.smooth = smooth
         self._stable_frames = 0
         self.ref_angle = None
-        self.prev_rotation = [0.0] * self.num_legs
         self.prev_extension = [0.0] * self.num_legs
         self._was_settling = False
 
@@ -254,40 +255,14 @@ class StabilizeLimbs(Procedure):
         if self.ref_angle is None:
             self.ref_angle = state_info.body_angle
             for limb_id in range(self.num_legs):
-                self.prev_rotation[limb_id] = signal.rotation[limb_id]
                 self.prev_extension[limb_id] = signal.extension[limb_id]
 
-        theta_err = normalize_angle(state_info.body_angle - self.ref_angle)
-        if (
-            abs(theta_err) < self.angle_deadband
-            and abs(state_info.body_angular_velocity) < self.velocity_deadband
-        ):
-            target_rotation = 0.0
-        else:
-            target_rotation = -self.kp * theta_err - self.kd * state_info.body_angular_velocity
-            target_rotation = max(
-                -self.max_correction_rate,
-                min(self.max_correction_rate, target_rotation),
-            )
-
-        max_rotation_step = self.max_correction_rate * self.dt
         max_extension_step = self.extension_speed * self.dt
 
         for limb_id in range(self.num_legs):
             signal.relax_spring[limb_id] = True
-            if state_info.active_grips[limb_id]:
-                signal.angle_lock[limb_id] = False
-                rot = self._smooth_step(
-                    self.prev_rotation[limb_id], target_rotation, max_rotation_step
-                )
-            else:
-                # Pin free legs to the body so they don't whip while gripped legs damp spin.
-                signal.angle_lock[limb_id] = True
-                rot = self._smooth_step(
-                    self.prev_rotation[limb_id], 0.0, max_rotation_step
-                )
-            self.prev_rotation[limb_id] = rot
-            signal.rotation[limb_id] = rot
+            signal.angle_lock[limb_id] = False
+            signal.rotation[limb_id] = 0.0
 
             ext = self._smooth_step(
                 self.prev_extension[limb_id], 0.0, max_extension_step
@@ -317,9 +292,11 @@ class AdjustAngle(Procedure):
         if self.angle_rotation_speed is None:
             raise Exception("Rotation speed unfilled")
         active_grips = [g for g in state_info.active_grips if g]
-        if len(active_grips)==1:
+        if len(active_grips) == 1:
             return signal
         d = self.curr_angle_difference(state_info)
+        if abs(d) < 0.02:
+            return signal
         sign = -1 if d > 0 else 1
         signal.rotation[self.limb_id] = sign * self.angle_rotation_speed
         return signal
@@ -578,21 +555,8 @@ class AttachCatch(Procedure):
         return True
 
     def _apply_pull_up_support(self, signal: ControlSignal, state_info: StateSignal) -> ControlSignal:
-        if not signal.relax_spring:
-            signal.relax_spring = [False] * self.num_legs
-        if not signal.angle_lock:
-            signal.angle_lock = [False] * self.num_legs
-
-        signal.angle_lock[self.limb_id] = True
         signal.rotation[self.limb_id] = 0.0
         signal.extension[self.limb_id] = 0.0
-
-        for limb_id in range(self.num_legs):
-            if state_info.active_grips[limb_id] and limb_id != self.limb_id:
-                signal.relax_spring[limb_id] = True
-
-        if abs(state_info.body_angular_velocity) > 2.0:
-            signal.damp_body = True
         return signal
 
     def _attach_mode(self, state_info: StateSignal) -> str:
@@ -776,77 +740,193 @@ class Tracker(Procedure):
         return True
 
 class MoveCenter(Procedure):
+    """
+    Shift body center using gripped-leg extension.
+
+    When the move direction is nearly perpendicular to a gripped leg (pull-up
+    geometry), rotation helpers steer that leg as well.
+    """
+
+    SPEED_FACTOR = 0.2
+    LENGTH_RATE_FACTOR = 0.12
+    # Enable angle helpers when |leg/move angle - 90°| is within this band.
+    PULL_UP_ANGLE_TOLERANCE = math.radians(35)
+
     def __init__(self, goal_point, coordinator, ignore_legs=None):
         super().__init__(coordinator)
         self.goal_point = goal_point
         self.ignore_legs = ignore_legs if ignore_legs is not None else []
-        self.length_adjusters = [AdjustLength(limb_id, None, coordinator, None)
-                                 for limb_id in range(self.num_legs)]
-        self.angle_adjusters = [AdjustAngle(limb_id, None, coordinator)
-                                for limb_id in range(self.num_legs)]
-        for a in self.angle_adjusters:
-            a.acceleration_rate = 0
-        self._prev_center_pos = None
-        self.powerup = 1
-        self.lag_tolerance_threshold = 0.1
-        self.max_length_adjust_rate: float | None = None
+        self.move_center_speed *= self.SPEED_FACTOR
+        self.max_length_adjust_rate = coordinator.extension_speed * self.LENGTH_RATE_FACTOR
+        self._angle_rotation_speed = coordinator.angle_rotation_speed
 
-    def _calc_next_point(self, state_info:StateSignal):
-        move_vec = (self.goal_point - state_info.center_pos)
+    def _calc_next_point(self, state_info: StateSignal):
+        move_vec = self.goal_point - state_info.center_pos
         if move_vec.length == 0:
-           return state_info.center_pos
-        return state_info.center_pos + move_vec/move_vec.length*self.dt*self.move_center_speed
+            return state_info.center_pos
+        return state_info.center_pos + move_vec.normalized() * self.dt * self.move_center_speed
 
-    def get_adjuster(self, limb_id):
-        for adjuster in self.length_adjusters:
-            if adjuster.limb_id == limb_id:
-                return adjuster
-        raise Exception("No suitable adjuster")
+    def _needs_angle_helper(self, move_vec: Vec2d, leg_vec: Vec2d) -> bool:
+        if move_vec.length < 1e-6 or leg_vec.length < 1e-6:
+            return False
+        angle = abs(move_vec.get_angle_between(leg_vec))
+        return abs(angle - math.pi / 2) <= self.PULL_UP_ANGLE_TOLERANCE
 
-    def active_legs(self):
-        return [a.limb_id for a in self.length_adjusters if a.limb_id not in self.ignore_legs]
+    def _raw_desired_length(
+        self,
+        aim_center: Vec2d,
+        foot_pos: Vec2d,
+    ) -> float:
+        desired_len = (foot_pos - aim_center).length
+        return max(self.min_extension, min(self.max_extension, desired_len))
 
-    def adjust_signal(self, signal: ControlSignal, state_info):
+    def _grip_span_between(self, feet_pos: list[Vec2d], legs: list[int]) -> float:
+        if len(legs) < 2:
+            return 0.0
+        return (feet_pos[legs[0]] - feet_pos[legs[1]]).length
+
+    def _pull_up_geometry(
+        self,
+        move_vec: Vec2d,
+        legs_to_drive: list[int],
+        center_pos: Vec2d,
+        feet_pos: list[Vec2d],
+    ) -> bool:
+        if len(legs_to_drive) < 2 or move_vec.length < 1e-6:
+            return False
+        return all(
+            self._needs_angle_helper(move_vec, feet_pos[limb_id] - center_pos)
+            for limb_id in legs_to_drive
+        )
+
+    def _coordinated_pull_up_lengths(
+        self,
+        center_pos: Vec2d,
+        aim_center: Vec2d,
+        feet_pos: list[Vec2d],
+        legs_to_drive: list[int],
+        foot_dist: float,
+    ) -> dict[int, float]:
+        """
+        Share lengthening across gripped legs during pull-up so one leg does not
+        race to max_extension while the other barely moves.
+        """
+        curr = {
+            limb_id: (center_pos - feet_pos[limb_id]).length
+            for limb_id in legs_to_drive
+        }
+        raw = {
+            limb_id: (aim_center - feet_pos[limb_id]).length
+            for limb_id in legs_to_drive
+        }
+        curr_sum = sum(curr.values())
+        raw_sum = sum(raw.values())
+        if raw_sum <= 1e-6:
+            return {
+                limb_id: self._raw_desired_length(aim_center, feet_pos[limb_id])
+                for limb_id in legs_to_drive
+            }
+
+        target_sum = max(foot_dist, min(raw_sum, len(legs_to_drive) * self.max_extension))
+        grow = max(0.0, target_sum - curr_sum)
+        desired = {}
+        for limb_id in legs_to_drive:
+            share = raw[limb_id] / raw_sum
+            length = curr[limb_id] + grow * share
+            desired[limb_id] = max(
+                self.min_extension,
+                min(self.max_extension, length),
+            )
+        return desired
+
+    def _extension_drive_to_length(self, curr_len: float, desired_len: float) -> float:
+        delta_len = desired_len - curr_len
+        margin = self.min_extension * 0.05
+
+        if delta_len < 0 and curr_len <= self.min_extension + margin:
+            return 0.0
+        if delta_len > 0 and curr_len >= self.max_extension - margin:
+            return 0.0
+        if abs(delta_len) <= 1e-6:
+            return 0.0
+
+        rate = min(abs(delta_len) / self.dt, self.max_length_adjust_rate)
+        return (1.0 if delta_len > 0 else -1.0) * rate
+
+    def _extension_drive(
+        self,
+        center_pos: Vec2d,
+        aim_center: Vec2d,
+        foot_pos: Vec2d,
+    ) -> float:
+        """Extension rate toward the length needed at aim_center."""
+        curr_len = (foot_pos - center_pos).length
+        desired_len = self._raw_desired_length(aim_center, foot_pos)
+        return self._extension_drive_to_length(curr_len, desired_len)
+
+    def adjust_signal(self, signal: ControlSignal, state_info: StateSignal):
         center_pos = state_info.center_pos
-        next_frame_center = self._calc_next_point(state_info)
-        next_move_vector = next_frame_center - center_pos
-        gripped_legs = [i for i, gripped in enumerate(state_info.active_grips) if gripped]
+        aim_center = self._calc_next_point(state_info)
+        move_vec = aim_center - center_pos
         legs_to_drive = [
-            i for i in gripped_legs if i not in self.ignore_legs
+            i
+            for i, gripped in enumerate(state_info.active_grips)
+            if gripped and i not in self.ignore_legs
         ]
 
-        if self._prev_center_pos:
-            if (center_pos - self._prev_center_pos).length < self.move_center_speed*self.lag_tolerance_threshold:
-                self.powerup *= 1.001
-            else:
-                self.powerup = 1
-        self._prev_center_pos = center_pos
+        foot_dist = self._grip_span_between(state_info.feet_pos, legs_to_drive)
+        pull_up = self._pull_up_geometry(
+            move_vec, legs_to_drive, center_pos, state_info.feet_pos
+        )
+        if pull_up:
+            desired_lengths = self._coordinated_pull_up_lengths(
+                center_pos,
+                aim_center,
+                state_info.feet_pos,
+                legs_to_drive,
+                foot_dist,
+            )
+        else:
+            desired_lengths = {
+                limb_id: self._raw_desired_length(
+                    aim_center, state_info.feet_pos[limb_id]
+                )
+                for limb_id in legs_to_drive
+            }
 
-        aim_center = center_pos + next_move_vector * self.powerup
+        for limb_id in legs_to_drive:
+            foot_pos = state_info.feet_pos[limb_id]
+            leg_vec = foot_pos - center_pos
+            curr_len = leg_vec.length
 
-        for length_adj, angle_adj in zip(self.length_adjusters, self.angle_adjusters):
-            limb_id = length_adj.limb_id
-
-            if limb_id not in legs_to_drive:
+            if not self._needs_angle_helper(move_vec, leg_vec):
+                signal.extension[limb_id] = self._extension_drive_to_length(
+                    curr_len, desired_lengths[limb_id]
+                )
                 continue
 
-            next_foot_vec = state_info.feet_pos[limb_id] - aim_center
-            curr_foot_vec = state_info.feet_pos[limb_id] - center_pos
-            length_adj.goal_extension = max(self.min_extension, next_foot_vec.length)
-            rate = abs(next_foot_vec.length - curr_foot_vec.length) / self.dt
-            if self.max_length_adjust_rate is not None:
-                rate = min(rate, self.max_length_adjust_rate)
-            length_adj.extension_speed = rate
-
+            next_foot_vec = foot_pos - aim_center
+            curr_foot_vec = leg_vec
             angle_diff = next_foot_vec.get_angle_between(curr_foot_vec)
-            angle_adj.target_point = center_pos + next_foot_vec
-            angle_adj.extension_speed = - abs(angle_diff) / self.dt
+            if abs(angle_diff) > 1e-6:
+                rot_rate = angle_diff / self.dt
+                rot_rate = max(
+                    -self._angle_rotation_speed,
+                    min(self._angle_rotation_speed, rot_rate),
+                )
+                signal.rotation[limb_id] = rot_rate
+            else:
+                steer = move_vec.cross(leg_vec)
+                if abs(steer) > 1e-6:
+                    rot_rate = math.copysign(
+                        self._angle_rotation_speed * 0.25,
+                        steer,
+                    )
+                    signal.rotation[limb_id] = rot_rate
 
-        for a_l, a_a in zip(self.length_adjusters, self.angle_adjusters):
-            if a_l.limb_id not in legs_to_drive:
-                continue
-            signal = a_l.adjust_signal(signal, state_info)
-            signal = a_a.adjust_signal(signal, state_info)
+            signal.extension[limb_id] = self._extension_drive_to_length(
+                curr_len, desired_lengths[limb_id]
+            )
 
         return signal
 

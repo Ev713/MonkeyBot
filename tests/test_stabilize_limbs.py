@@ -19,9 +19,10 @@ class FakeCoordinator:
 
 
 class StabilizeLimbsTest(unittest.TestCase):
-    def test_relaxes_gripped_springs_and_damps_body(self):
+    def test_zeros_angle_speed_and_relaxes_springs(self):
         stabilizer = StabilizeLimbs(FakeCoordinator(), settle_frames=3)
         signal = empty_control_signal(3)
+        signal.rotation = [1.0, -0.5, 0.25]
         state = StateSignal(
             center_pos=Vec2d(0, 0),
             feet_pos=[Vec2d(0, 0), Vec2d(1, 0), Vec2d(0, 1)],
@@ -30,18 +31,14 @@ class StabilizeLimbsTest(unittest.TestCase):
             body_angular_velocity=0.0,
         )
         out = stabilizer.adjust_signal(signal, state)
-        self.assertTrue(out.relax_spring[0])
-        self.assertTrue(out.relax_spring[1])
-        self.assertTrue(out.relax_spring[2])
-        self.assertFalse(out.angle_lock[0])
-        self.assertTrue(out.angle_lock[1])
-        self.assertFalse(out.angle_lock[2])
+        self.assertTrue(all(out.relax_spring))
+        self.assertFalse(any(out.angle_lock))
+        self.assertEqual(out.rotation, [0.0, 0.0, 0.0])
         self.assertTrue(out.damp_body)
 
-    def test_smoothly_decays_motor_commands(self):
+    def test_smoothly_decays_extension_commands(self):
         stabilizer = StabilizeLimbs(FakeCoordinator(), settle_frames=3)
         signal = empty_control_signal(3)
-        signal.rotation = [1.0, -0.5, 0.25]
         signal.extension = [2.0, -1.0, 0.5]
         state = StateSignal(
             center_pos=Vec2d(0, 0),
@@ -51,27 +48,10 @@ class StabilizeLimbsTest(unittest.TestCase):
             body_angular_velocity=0.0,
         )
         out = stabilizer.adjust_signal(signal, state)
-        self.assertNotEqual(out.rotation, [0.0, 0.0, 0.0])
+        self.assertEqual(out.rotation, [0.0, 0.0, 0.0])
         self.assertNotEqual(out.extension, [0.0, 0.0, 0.0])
-        for rate in out.rotation:
-            self.assertLess(abs(rate), 1.0)
         for rate in out.extension:
             self.assertLess(abs(rate), 2.0)
-
-    def test_counters_body_spin_on_gripped_legs(self):
-        stabilizer = StabilizeLimbs(FakeCoordinator(), settle_frames=3)
-        state = StateSignal(
-            center_pos=Vec2d(0, 0),
-            feet_pos=[Vec2d(0, 0), Vec2d(1, 0), Vec2d(0, 1)],
-            active_grips=[True, True, True],
-            t=0,
-            body_angle=0.4,
-            body_angular_velocity=0.8,
-        )
-        out = stabilizer.adjust_signal(empty_control_signal(3), state)
-        self.assertLess(out.rotation[0], 0.0)
-        self.assertLess(out.rotation[1], 0.0)
-        self.assertLess(out.rotation[2], 0.0)
 
     def test_waits_for_low_body_spin(self):
         stabilizer = StabilizeLimbs(FakeCoordinator(), settle_frames=3)
