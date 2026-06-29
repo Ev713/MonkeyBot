@@ -121,9 +121,16 @@ class SimplifiedGraphPlanner:
 
     @property
     def initial_state(self) -> PlannerState:
-        feet = tuple(self.instance.init_feet)
-        close_enough = tuple(self.gp_is_close_enough[gp] for gp in feet)
-        return PlannerState(feet, close_enough)
+        feet: list[Optional[Point2D]] = []
+        close_enough: list[bool] = []
+        for gp in self.instance.init_feet:
+            if gp is None:
+                feet.append(None)
+                close_enough.append(True)
+            else:
+                feet.append(gp)
+                close_enough.append(self.gp_is_close_enough[gp])
+        return PlannerState(tuple(feet), tuple(close_enough))
 
     def is_goal(self, state: PlannerState) -> bool:
         return all(state.close_enough)

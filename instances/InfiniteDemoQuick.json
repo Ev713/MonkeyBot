@@ -1,0 +1,28 @@
+{
+  "name": "InfiniteDemoQuick",
+  "leg_extension": 3,
+  "grid_size_x": 8,
+  "grid_size_y": 10,
+  "gripping_points": [
+    [2, 2],
+    [6, 2],
+    [4, 2],
+    [2, 4],
+    [6, 4],
+    [4, 4],
+    [2, 6],
+    [6, 6],
+    [4, 6],
+    [2, 8],
+    [6, 8],
+    [4, 8],
+    [4, 10]
+  ],
+  "goal_point": [4, 7],
+  "init_center": [4, 3],
+  "init_feet": [
+    [2, 2],
+    [6, 2],
+    [4, 2]
+  ]
+}

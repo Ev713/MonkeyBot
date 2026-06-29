@@ -501,8 +501,6 @@ class AttachCatch(Procedure):
         self.grabber = Grabber(limb_id, target_point, coordinator)
         self.target_point = target_point
         self.holding_limb_ids = list(holding_limb_ids)
-        self._status_frame = 0
-        self._status_interval = 20
         self._reach_phase = False
 
     def _foot_dist(self, state_info: StateSignal) -> float:
@@ -604,11 +602,6 @@ class AttachCatch(Procedure):
 
         runtime_debug.procedure_status = self._build_status(state_info, signal)
 
-    def _maybe_log_status(self, state_info: StateSignal, signal: ControlSignal) -> None:
-        self._status_frame += 1
-        if self._status_frame == 1 or self._status_frame % self._status_interval == 0:
-            print(self._build_status(state_info, signal), flush=True)
-
     def describe_start(self, state_info: StateSignal) -> str | None:
         target = format_grid_point(self.coordinator, self.target_point)
         holding = format_limb_list(
@@ -691,7 +684,6 @@ class AttachCatch(Procedure):
 
         self._update_phase(state_info, signal)
         self._record_status(state_info, signal)
-        self._maybe_log_status(state_info, signal)
         return signal
 
     def is_finished(self, state_info: StateSignal):

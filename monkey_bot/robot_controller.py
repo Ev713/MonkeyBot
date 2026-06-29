@@ -734,7 +734,13 @@ class SimplifiedProblemController(Controller):
         self.setup_finishing_move_center_to_goal()
         self.finished_plan = True
 
-    def create_plan(self, plan_path=None, transition_links_path=None):
+    def create_plan(
+        self,
+        plan_path=None,
+        transition_links_path=None,
+        *,
+        allow_jumps: bool = True,
+    ):
         start = time.perf_counter()
         transition_links = []
 
@@ -742,7 +748,7 @@ class SimplifiedProblemController(Controller):
         planner = SimplifiedGraphPlanner(self.coordinator.instance, transition_links)
         plan = planner.solve()
 
-        if plan is None and self.enable_transitional_links:
+        if plan is None and self.enable_transitional_links and allow_jumps:
             logging.info("No plan without jumps — computing transition links")
             transition_links = self._cached_transition_links
             if transition_links is None:

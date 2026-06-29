@@ -126,7 +126,12 @@ class InstanceSimulationConfig:
         return self.grid_to_screen(*self.instance.goal_point)
 
     def screen_init_feet(self):
-        return [self.grid_to_screen(*f) for f in self.instance.init_feet]
+        feet = []
+        for f in self.instance.init_feet:
+            if f is None:
+                raise ValueError("screen_init_feet requires all init_feet to be set")
+            feet.append(self.grid_to_screen(*f))
+        return feet
 
     def screen_init_center(self):
         return self.grid_to_screen(*self.instance.init_center)

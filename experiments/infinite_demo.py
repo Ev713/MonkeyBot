@@ -39,14 +39,14 @@ def default_configs(
         extension_speed=4,
         rotation_speed=2,
         angle_rotation_speed=0.75,
-        move_center_speed=16,
+        move_center_speed=64,
         body_mass=5,
         body_radius=0.4,
         foot_mass=0.2,
         leg_mass=0.2,
         simplified_problem=True,
-        leg_spring_stiffness=200,
-        leg_spring_damping=1.5,
+        leg_spring_stiffness=150,
+        leg_spring_damping=1.0,
         min_extension=0.4,
         max_takeoff_speed=20,
         max_jump_dist=15,
@@ -61,7 +61,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Run the infinite MonkeyBot climbing demo."
     )
-    parser.add_argument("--instance", default="GPT1")
+    parser.add_argument("--instance", default="InfiniteDemoQuick")
     parser.add_argument("--instances-folder", default="instances")
     parser.add_argument(
         "--cell-size",

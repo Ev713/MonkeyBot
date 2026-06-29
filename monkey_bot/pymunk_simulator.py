@@ -255,16 +255,24 @@ class MonkeyBotSimulator:
     def create_goal_point(self, goal_point):
         if goal_point is not None:
             goal_x, goal_y = goal_point
-            self.goal_point = self.create_dot(goal_x, goal_y, (255,0,0, 100), 5)
+            self.goal_point = self.create_dot(goal_x, goal_y, (255, 0, 0, 100), 5)
 
-    def update_goal_point(self, goal_point):
+    def update_goal_point(self, goal_point, coordinator=None):
         if goal_point is None:
             return
-        if self.goal_point is None:
-            self.create_goal_point(goal_point)
-            return
-        body, _ = self.goal_point
-        body.position = (goal_point.x, goal_point.y)
+        if self.goal_point is not None:
+            body, shape = self.goal_point
+            self.space.remove(body, shape)
+            self.goal_point = None
+        goal_x, goal_y = float(goal_point.x), float(goal_point.y)
+        self.goal_point = self.create_dot(goal_x, goal_y, (255, 0, 0, 100), 5)
+        if coordinator is not None:
+            grid = coordinator.screen_to_grid(goal_point)
+            print(
+                f"Goal marker moved to grid {grid} "
+                f"screen ({goal_x:.0f}, {goal_y:.0f})",
+                flush=True,
+            )
 
     def create_dot(self, x, y, color, radius):
         body = pymunk.Body(body_type=pymunk.Body.STATIC)

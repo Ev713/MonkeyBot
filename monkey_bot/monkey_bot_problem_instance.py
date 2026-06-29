@@ -15,7 +15,7 @@ class MonkeyBotProblemInstance:
     gripping_points: List[Point2D]
     goal_point: Point2D
     init_center: Point2D
-    init_feet: List[Point2D]
+    init_feet: List[Optional[Point2D]]
     allowed_jump_configs: Optional[list] = None
     _gp_index: dict[Point2D, Point2D] = field(default_factory=dict, repr=False)
 
@@ -26,7 +26,9 @@ class MonkeyBotProblemInstance:
         self.goal_point = normalize_point(self.goal_point)
         self.init_center = normalize_point(self.init_center)
         self.gripping_points = [normalize_point(p) for p in self.gripping_points]
-        self.init_feet = [normalize_point(p) for p in self.init_feet]
+        self.init_feet = [
+            normalize_point(p) if p is not None else None for p in self.init_feet
+        ]
         self._gp_index = {gp: gp for gp in self.gripping_points}
 
     @classmethod
@@ -52,7 +54,7 @@ class MonkeyBotProblemInstance:
             "gripping_points": [list(p) for p in self.gripping_points],
             "goal_point": list(self.goal_point),
             "init_center": list(self.init_center),
-            "init_feet": [list(p) for p in self.init_feet],
+            "init_feet": [list(p) if p is not None else None for p in self.init_feet],
         }
 
     def resolve_grip_point(self, point: Point2D) -> Optional[Point2D]:
@@ -86,7 +88,7 @@ def snapshot_instance(
     base: MonkeyBotProblemInstance,
     *,
     init_center: Point2D,
-    init_feet: List[Point2D],
+    init_feet: List[Optional[Point2D]],
     goal_point: Point2D,
 ) -> MonkeyBotProblemInstance:
     """Return a copy of *base* with updated start state and goal."""
@@ -115,7 +117,10 @@ def scale_instance(instance: MonkeyBotProblemInstance, factor: float) -> MonkeyB
         gripping_points=[(x * factor, y * factor) for x, y in instance.gripping_points],
         goal_point=(instance.goal_point[0] * factor, instance.goal_point[1] * factor),
         init_center=(instance.init_center[0] * factor, instance.init_center[1] * factor),
-        init_feet=[(x * factor, y * factor) for x, y in instance.init_feet],
+        init_feet=[
+            (p[0] * factor, p[1] * factor) if p is not None else None
+            for p in instance.init_feet
+        ],
         allowed_jump_configs=instance.allowed_jump_configs,
     )
 
