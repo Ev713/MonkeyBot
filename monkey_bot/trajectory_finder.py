@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import optuna
@@ -150,9 +150,39 @@ class Launcher:
         pass
 
 
+@dataclass
 class GeometricLauncher(Launcher):
 
-    up_bias:float=0.5
+    up_bias: float = 0.5
+    min_runway_limb_alignment_deg: float = 15.0
+    min_limb_vector_angle_deg: float = 20.0
+
+    def _min_runway_limb_alignment_dot(self) -> float:
+        return math.sin(math.radians(self.min_runway_limb_alignment_deg))
+
+    def _limb_vectors_well_separated(self, body_pos: Vec2d) -> bool:
+        """Gripped limb directions must subtend at least min_limb_vector_angle_deg."""
+        limbs = [leg_pos - body_pos for leg_pos in self.init_jump_leg_points]
+        if any(limb.length < 1e-9 for limb in limbs):
+            return False
+        l1_hat = limbs[0] / limbs[0].length
+        l2_hat = limbs[1] / limbs[1].length
+        max_dot = math.cos(math.radians(self.min_limb_vector_angle_deg))
+        return l1_hat.dot(l2_hat) <= max_dot
+
+    def _velocity_aligned_with_limbs(self, body_pos: Vec2d, velocity: Vec2d) -> bool:
+        """Runway motion must not be nearly perpendicular to a gripped leg."""
+        if velocity.length < 1e-9:
+            return False
+        v_hat = velocity / velocity.length
+        min_abs_dot = self._min_runway_limb_alignment_dot()
+        for leg_pos in self.init_jump_leg_points:
+            limb = leg_pos - body_pos
+            if limb.length < 1e-9:
+                return False
+            if abs(v_hat.dot(limb / limb.length)) < min_abs_dot:
+                return False
+        return True
 
     def suggest_trajectory(self):
         if self.max_average_distance is not None and self.jump_is_too_long():
@@ -170,7 +200,7 @@ class GeometricLauncher(Launcher):
         n_samples = 12
         goal = self.choose_goal_point()
         leg_1_pos = self.init_jump_leg_points[0]
-        leg_2_pos = self.init_jump_leg_points[0]
+        leg_2_pos = self.init_jump_leg_points[1]
         max_ext = self.max_extension
         min_ext = self.min_extension
 
@@ -181,13 +211,18 @@ class GeometricLauncher(Launcher):
             for r in np.linspace(0.9*min_ext+0.1*max_ext, 0.1*min_ext+0.9*max_ext, 3):  # 3 radii (inner, mid, outer)
                 for theta in angles:
                     p = leg + Vec2d(math.cos(theta), math.sin(theta)) * r
-                    if self.starting_point_in_permitted_range(p):
+                    if (
+                        self.starting_point_in_permitted_range(p)
+                        and self._limb_vectors_well_separated(p)
+                    ):
                         circle_points.append(p)
         best_point = None
         best_length = -1.0
 
         for p in circle_points:
             v = self.find_best_launch_vector(p, goal)  # returns Vec2d velocity
+            if not self._velocity_aligned_with_limbs(p, v):
+                continue
             pos = p
             total_length = 0.0
 
@@ -288,3 +323,41 @@ class OptunaLauncher(Launcher):
             "study": study,
             "trajectory": best_traj,
         }
+
+
+def estimate_ballistic_catch_duration(
+    body_pos: Vec2d,
+    takeoff_vector: Vec2d,
+    catch_points: List[Vec2d],
+    *,
+    g: float,
+    dt: float,
+    max_extension: float,
+    min_extension: float,
+    max_x: float,
+    max_y: float,
+    init_jump_leg_points: Optional[List[Vec2d]] = None,
+    trajectory_fps: int = 20,
+) -> Optional[float]:
+    """Seconds from takeoff body pose until the planned catch window opens."""
+    legs = init_jump_leg_points if init_jump_leg_points is not None else catch_points[:2]
+    launcher = Launcher(
+        g=g,
+        dt=dt,
+        catch_points=list(catch_points),
+        init_jump_leg_points=list(legs),
+        max_x=int(max_x),
+        max_y=int(max_y),
+        max_extension=max_extension,
+        min_extension=min_extension,
+        trajectory_fps=trajectory_fps,
+    )
+    trajectory = launcher.approximate_trajectory(body_pos, takeoff_vector)
+    catch_window = launcher.get_catch_window(trajectory)
+    if not catch_window:
+        return None
+    first = catch_window[0]
+    for index, point in enumerate(trajectory):
+        if (point - first).length < 1e-3:
+            return index / trajectory_fps
+    return len(trajectory) / trajectory_fps

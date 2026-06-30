@@ -10,7 +10,7 @@ import pymunk.pygame_util
 from pymunk import SimpleMotor, Transform, Vec2d
 from scipy.optimize import newton_krylov
 
-from monkey_bot.runtime_debug import procedure_status
+import monkey_bot.runtime_debug as runtime_debug
 from monkey_bot.signals import ControlSignal, StateSignal
 from monkey_bot.config import InstanceSimulationConfig
 
@@ -230,14 +230,26 @@ class MonkeyBotSimulator:
         if self.active_grips[foot_index] is not None:
             return True
         tolerance = getattr(self, "grip_tolerance", self.epsilon)
-        for i, (gp, _) in enumerate(self.grip_points):
-            dist = (foot_body.position - gp.position).length
+        for _i, (gp, _) in enumerate(self.grip_points):
+            gp_pos = Vec2d(*gp.position)
+            dist = (foot_body.position - gp_pos).length
             if dist <= tolerance:
+                if not self.coordinator.disable_assist:
+                    self._snap_foot_to_grip_point(foot_index, gp_pos)
                 self.active_grips[foot_index] = self._create_pivot_joint(
-                    foot_body, gp, gp.position
+                    foot_body, gp, gp_pos
                 )
                 return True
         return False
+
+    def _snap_foot_to_grip_point(self, foot_index: int, gp_pos: Vec2d) -> None:
+        """Move the foot onto the GP center when a grip engages."""
+        foot_body, _ = self.feet[foot_index]
+        foot_body.position = gp_pos
+        foot_body.velocity = (0, 0)
+        foot_body.angular_velocity = 0
+        if foot_index < len(self.spring_motors):
+            self.spring_motors[foot_index].calibrate()
 
     def release_grip(self, i):
         self.unlock_body_leg_angle(i)
@@ -285,8 +297,8 @@ class MonkeyBotSimulator:
         self.space.add(body, shape)
         return body, shape
 
-    def _create_robot_body(self, init_center_pos, body_radius, body_mass):
-        robot_body = pymunk.Body(moment=10)
+    def _create_robot_body(self, init_center_pos, body_radius, body_mass, body_moment):
+        robot_body = pymunk.Body(moment=body_moment)
         robot_body.position = init_center_pos
         body_shape = pymunk.Circle(robot_body, body_radius)
         body_shape.mass = body_mass
@@ -407,7 +419,12 @@ class MonkeyBotSimulator:
 
 
     def create_monkey_robot(self, coordinator:InstanceSimulationConfig):
-        body = self._create_robot_body(coordinator.screen_init_center(), coordinator.body_radius, coordinator.body_mass)
+        body = self._create_robot_body(
+            coordinator.screen_init_center(),
+            coordinator.body_radius,
+            coordinator.body_mass,
+            coordinator.body_moment,
+        )
         for i, (x, y) in enumerate(coordinator.screen_init_feet()):
             # convert to screen position
             foot_screen_pos = pymunk.Vec2d(x, y)
@@ -456,6 +473,39 @@ class MonkeyBotSimulator:
             except pygame.error:
                 pass
 
+    def _physics_to_screen(self, x: float, y: float) -> tuple[int, int]:
+        t = self.draw_options.transform
+        sx = t.a * x + t.c * y + t.tx
+        sy = t.b * x + t.d * y + t.ty
+        return int(round(sx)), int(round(sy))
+
+    def _draw_procedure_overlays(self) -> None:
+        orange = (255, 140, 0)
+        line = runtime_debug.move_center_line
+        if line is not None:
+            (x0, y0), (x1, y1) = line
+            if _coords_ok(x0, y0, x1, y1):
+                pygame.draw.line(
+                    self.window,
+                    orange,
+                    self._physics_to_screen(x0, y0),
+                    self._physics_to_screen(x1, y1),
+                    3,
+                )
+        target = runtime_debug.attach_target
+        if target is not None:
+            (cx, cy), radius = target
+            if _coords_ok(cx, cy, radius):
+                t = self.draw_options.transform
+                screen_r = max(4, int(round(abs(radius * t.a))))
+                pygame.draw.circle(
+                    self.window,
+                    orange,
+                    self._physics_to_screen(cx, cy),
+                    screen_r,
+                    3,
+                )
+
     def draw(self):
         if not self.run or not self._display_active or self.window is None:
             return
@@ -465,6 +515,7 @@ class MonkeyBotSimulator:
         try:
             self.window.fill("white")
             self.space.debug_draw(self.draw_options)
+            self._draw_procedure_overlays()
             pygame.display.update()
         except (TypeError, pygame.error):
             self._halt_simulation("Simulation display failed (physics likely unstable).")
@@ -581,8 +632,8 @@ class MonkeyBotSimulator:
         print(f"\n=== Simulation halt diagnostics ===", flush=True)
         print(f"reason: {reason}", flush=True)
         print(f"frame: {self.t}", flush=True)
-        if procedure_status:
-            print(f"procedure: {procedure_status}", flush=True)
+        if runtime_debug.procedure_status:
+            print(f"procedure: {runtime_debug.procedure_status}", flush=True)
 
         issues = self._physics_halt_issues()
         if issues:
@@ -724,6 +775,22 @@ class MonkeyBotSimulator:
                 self.body.position[0] > self.sim_config.screen_width or
                 self.body.position[1] > self.sim_config.screen_height)
 
+    def _enforce_gripped_min_extension(self) -> None:
+        """Keep gripped legs from compressing below min_extension in physics."""
+        if self.coordinator is None or self.coordinator.robot_config.disable_assist:
+            return
+        min_ext = self.coordinator.min_extension
+        body_pos = self.body.position
+        for i, grip in enumerate(self.active_grips):
+            if grip is None:
+                continue
+            foot_pos = self.feet[i][0].position
+            delta = foot_pos - body_pos
+            length = delta.length
+            if length < min_ext and length > 1e-9:
+                delta_hat = delta / length
+                self.body.position = foot_pos - delta_hat * min_ext
+
     def step(self):
         if not self.run or self._halted:
             return
@@ -749,6 +816,12 @@ class MonkeyBotSimulator:
             self._halt_simulation("Simulation became unstable after physics step.")
             return
 
+        self._enforce_gripped_min_extension()
+
+        if not self._physics_is_valid():
+            self._halt_simulation("Simulation became unstable after min-extension enforce.")
+            return
+
         if self.writer:
             frame = pygame.surfarray.array3d(pygame.display.get_surface())
             frame = frame.swapaxes(0, 1)
@@ -757,6 +830,18 @@ class MonkeyBotSimulator:
         self.draw()
         if getattr(self.sim_config, "realtime", True):
             self.clock.tick(self.sim_config.fps)
+
+    def pump_display(self, *, fps: int = 30) -> bool:
+        """Redraw and process window events without advancing physics."""
+        if not self.run or self._halted or not self._display_active:
+            return False
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self._halt_simulation("Simulation window closed.")
+                return False
+        self.draw()
+        self.clock.tick(fps)
+        return True
 
     def get_state(self):
         return StateSignal(

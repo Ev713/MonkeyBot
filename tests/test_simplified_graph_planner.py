@@ -2,7 +2,11 @@ import unittest
 
 from monkey_bot.action import parse_action
 from monkey_bot.monkey_bot_problem_instance import MonkeyBotProblemInstance
-from monkey_bot.simplified_graph_planner import SimplifiedGraphPlanner, state_str
+from monkey_bot.simplified_graph_planner import (
+    SimplifiedGraphPlanner,
+    compute_attach_config_components,
+    state_str,
+)
 
 
 def make_instance(**overrides):
@@ -82,6 +86,29 @@ class SimplifiedGraphPlannerTest(unittest.TestCase):
         encoded = catch_points_str(catch)
         self.assertEqual(encoded, "10_4_10_16_6_16")
         self.assertEqual(parse_catch_points(encoded), catch)
+
+    def test_mandatory_jump_instance_has_no_attach_only_plan(self):
+        from monkey_bot.monkey_bot_problem_instance import load_instance
+
+        for name in ("MandatoryJump", "JumpTwoClusters"):
+            with self.subTest(instance=name):
+                instance = load_instance(name, "instances")
+                self.assertIsNone(SimplifiedGraphPlanner(instance, []).solve())
+                if name == "JumpTwoClusters":
+                    links = [((1, 1), (1, 3), ((7, 7), (7, 9), (9, 7)))]
+                else:
+                    links = [((2, 5), (5, 5), ((15, 14), (16, 13), (16, 14)))]
+                plan = SimplifiedGraphPlanner(instance, links).solve()
+                self.assertIsNotNone(plan)
+                self.assertTrue(any("use_TL__" in action for action in plan.actions))
+
+    def test_attach_config_components_partition_valid_configs(self):
+        instance = make_instance()
+        config_component, gps_by_component = compute_attach_config_components(instance)
+        self.assertGreater(len(config_component), 0)
+        self.assertGreaterEqual(len(gps_by_component), 1)
+        init_cfg = frozenset(instance.init_feet)
+        self.assertIn(init_cfg, config_component)
 
 
 if __name__ == "__main__":

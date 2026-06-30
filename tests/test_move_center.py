@@ -112,6 +112,72 @@ class MoveCenterTest(unittest.TestCase):
         aim = Vec2d(0.0, 0.0)
         self.assertEqual(move._extension_drive(center, aim, foot), 0.0)
 
+    def test_recovery_when_body_inside_min_circle(self):
+        coordinator = make_coordinator()
+        min_len = coordinator.min_extension
+        foot = Vec2d(100.0, 100.0)
+        center = foot + Vec2d(min_len * 0.5, 0.0)
+        goal = foot + Vec2d(min_len * 3.0, 0.0)
+        move = MoveCenter(goal, coordinator)
+        state = StateSignal(
+            center_pos=center,
+            feet_pos=[foot, Vec2d(0.0, 0.0), Vec2d(0.0, 0.0)],
+            active_grips=[True, False, False],
+            t=0,
+        )
+        out = move.adjust_signal(empty_control_signal(3), state)
+        self.assertGreater(out.extension[0], 0.0)
+        self.assertEqual(out.rotation[0], 0.0)
+
+    def test_slides_tangent_when_goal_would_break_min_extension(self):
+        coordinator = make_coordinator()
+        min_len = coordinator.min_extension
+        foot = Vec2d(100.0, 100.0)
+        center = foot + Vec2d(min_len, 0.0)
+        goal = foot  # straight toward the grip would violate min extension
+        move = MoveCenter(goal, coordinator)
+        state = StateSignal(
+            center_pos=center,
+            feet_pos=[foot, Vec2d(0.0, 0.0), Vec2d(0.0, 0.0)],
+            active_grips=[True, False, False],
+            t=0,
+        )
+        next_pos = move._calc_next_point(state)
+        self.assertGreaterEqual((foot - next_pos).length, min_len - 1e-6)
+        self.assertGreater(abs(next_pos.y - center.y), 1e-6)
+
+    def test_calc_next_point_rebases_when_inside_min_circle(self):
+        coordinator = make_coordinator()
+        min_len = coordinator.min_extension
+        foot = Vec2d(0.0, 0.0)
+        center = Vec2d(min_len * 0.6, 0.0)
+        move = MoveCenter(Vec2d(min_len * 2.0, 0.0), coordinator)
+        state = StateSignal(
+            center_pos=center,
+            feet_pos=[foot, Vec2d(0.0, 0.0), Vec2d(0.0, 0.0)],
+            active_grips=[True, False, False],
+            t=0,
+        )
+        next_pos = move._calc_next_point(state)
+        self.assertGreaterEqual((foot - next_pos).length, min_len - 1e-6)
+
+    def test_min_extension_constraint_preserves_outward_motion(self):
+        coordinator = make_coordinator()
+        min_len = coordinator.min_extension
+        foot = Vec2d(0.0, 0.0)
+        center = Vec2d(min_len, 0.0)
+        goal = Vec2d(min_len * 3, 0.0)
+        move = MoveCenter(goal, coordinator)
+        state = StateSignal(
+            center_pos=center,
+            feet_pos=[foot, Vec2d(0.0, 0.0), Vec2d(0.0, 0.0)],
+            active_grips=[True, False, False],
+            t=0,
+        )
+        next_pos = move._calc_next_point(state)
+        self.assertGreater(next_pos.x, center.x)
+        self.assertAlmostEqual(next_pos.y, center.y, places=5)
+
     def test_pull_up_coordination_balances_leg_growth(self):
         coordinator = make_coordinator()
         move = MoveCenter(coordinator.grid_to_screen(4, 12), coordinator)
@@ -136,6 +202,46 @@ class MoveCenterTest(unittest.TestCase):
         self.assertGreater(coordinated[0], curr_len_0)
         self.assertLess(coordinated[0], move.max_extension - 1e-3)
         self.assertLessEqual(coordinated[2], independent[2])
+
+    def test_opposing_legs_enable_pull_up_geometry(self):
+        coordinator = make_coordinator()
+        center = coordinator.grid_to_screen(4, 4)
+        goal = coordinator.grid_to_screen(4, 5)
+        move = MoveCenter(goal, coordinator)
+        feet = [
+            coordinator.grid_to_screen(2, 4),
+            coordinator.grid_to_screen(4, 2),
+            coordinator.grid_to_screen(6, 4),
+        ]
+        move_vec = goal - center
+        self.assertTrue(move._has_opposing_gripped_legs(center, feet, [0, 2]))
+        self.assertTrue(move._pull_up_geometry(move_vec, [0, 2], center, feet))
+
+    def test_opposing_legs_enable_assist_when_not_perpendicular_to_move(self):
+        import math
+
+        coordinator = make_coordinator()
+        center = coordinator.grid_to_screen(4, 4)
+        goal = coordinator.grid_to_screen(4, 5)
+        move = MoveCenter(goal, coordinator)
+        move_vec = goal - center
+        leg0_vec = move_vec.normalized().rotated(math.radians(50)) * 2 * coordinator.cell_size
+        feet = [
+            center + leg0_vec,
+            coordinator.grid_to_screen(4, 2),
+            center - leg0_vec,
+        ]
+        self.assertFalse(move._needs_angle_helper(move_vec, leg0_vec))
+        state = StateSignal(
+            center_pos=center,
+            feet_pos=feet,
+            active_grips=[True, False, True],
+            t=0,
+        )
+        out = move.adjust_signal(empty_control_signal(3), state)
+        self.assertTrue(move._pull_up_geometry(move_vec, [0, 2], center, feet))
+        self.assertNotAlmostEqual(out.rotation[0], 0.0, places=5)
+        self.assertNotAlmostEqual(out.rotation[2], 0.0, places=5)
 
 
 if __name__ == "__main__":

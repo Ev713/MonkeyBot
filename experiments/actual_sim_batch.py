@@ -276,6 +276,8 @@ def build_possible_jump_setup(run_id, rng, sim_config, robot_config, max_attempt
             min_extension=coordinator.min_extension,
             max_take_off_speed=coordinator.max_jump_speed,
             max_average_distance=coordinator.max_jump_dist(),
+            min_runway_limb_alignment_deg=robot_config.min_runway_limb_alignment_deg,
+            min_limb_vector_angle_deg=robot_config.min_limb_vector_angle_deg,
         )
         launch_start, launch_vector = launcher.suggest_trajectory()
         if launch_start is None or launch_vector is None:

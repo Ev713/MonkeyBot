@@ -47,18 +47,68 @@ class RobotConfig:
     leg_spring_stiffness:float
     leg_spring_damping:float
     simplified_problem:bool
-    min_extension:float=0.05
+    # Limb length limits in grid cells (multiplied by cell_size in sim).
+    min_extension: float = 0.05
+    # When set, overrides instance JSON leg_extension for planning and sim.
+    max_extension: Optional[float] = None
+    # Sim-only headroom above max_extension grid length (springs/geometry slack).
+    max_extension_slack: float = 1.1
     angle_epsilon:float= 2*math.pi/24
     foot_radius:float = 0.01
     leg_thickness:float = 0.01
     body_radius:float = 0.1
+    # Rotational inertia of the body (pymunk moment); higher = harder to spin in flight.
+    body_moment: float = 10.0
     max_takeoff_speed:float = 10
     max_jump_dist: float = 3
     prune_short_jumps: bool = True
     prune_in_clique_jumps: bool = True
     prune_similar_jumps: bool = True
     angle_rotation_speed: Optional[float] = None
+    # When True, skip simulation assists (e.g. teleporting feet to GP center on grip).
+    disable_assist: bool = False
+    # MoveCenter: scale configured move_center_speed (1.0 = use config value directly).
+    move_center_speed_factor: float = 1.0
+    # MoveCenter: fraction of extension_speed used to change leg length while shifting.
+    move_center_length_rate_factor: float = 1.0
+    # MoveCenter: enable pull-up rotation helpers within this many degrees of 90°/180°.
+    pull_up_angle_tolerance_deg: float = 35.0
+    # AttachCatch GetCloser: gentler center nudges while feet stay gripped.
+    get_closer_speed_factor: float = 0.2
+    get_closer_length_rate_factor: float = 0.35
+    # Jump runway: scale geometric launch speed from the transition-link planner.
+    jump_runway_speed_scale: float = 1.0
+    # Jump runway: reject velocities within this many degrees of perpendicular to a limb.
+    min_runway_limb_alignment_deg: float = 15.0
+    # Jump runway: reject body positions where gripped limb vectors subtend less than this.
+    min_limb_vector_angle_deg: float = 20.0
+    # Verbose per-frame MoveCenter diagnostics to stdout (jump runway only).
+    debug_move_center: bool = False
+    # Verbose AttachCatch / StabilizeLimbs phase logging.
+    debug_attach: bool = False
+    # DynamicCatch: quintic limb approach duration bounds (seconds).
+    catch_min_duration: float = 0.15
+    catch_max_duration: float = 2.5
+    # Jump takeoff release radius in grid cells (looser than epsilon; ~50px at 80px cells).
+    release_tolerance: float = 0.625
 
+
+def leg_extension_grid(
+    instance: MonkeyBotProblemInstance, robot_config: RobotConfig
+) -> float:
+    """Max leg reach in grid cells (planner + instance geometry)."""
+    if robot_config.max_extension is not None:
+        return float(robot_config.max_extension)
+    return float(instance.max_extension)
+
+
+def apply_robot_leg_limits(
+    instance: MonkeyBotProblemInstance, robot_config: RobotConfig
+) -> MonkeyBotProblemInstance:
+    """Sync instance leg_extension from RobotConfig when overridden."""
+    ext = leg_extension_grid(instance, robot_config)
+    instance.max_extension = ext
+    return instance
 
 
 class InstanceSimulationConfig:
@@ -138,11 +188,16 @@ class InstanceSimulationConfig:
 
     @property
     def max_extension(self):
-        return self.instance.max_extension * self.cell_size * 1.1
+        ext = leg_extension_grid(self.instance, self.robot_config)
+        return ext * self.cell_size * self.robot_config.max_extension_slack
 
     @property
     def body_mass(self):
         return self.robot_config.body_mass
+
+    @property
+    def body_moment(self):
+        return self.robot_config.body_moment
 
     @property
     def foot_mass(self):
@@ -159,6 +214,10 @@ class InstanceSimulationConfig:
     @property
     def epsilon(self):
         return self.robot_config.epsilon* self.cell_size
+
+    @property
+    def release_tolerance(self):
+        return self.robot_config.release_tolerance * self.cell_size
 
     @property
     def leg_thickness(self):
@@ -212,3 +271,7 @@ class InstanceSimulationConfig:
     @property
     def max_jump_speed(self):
         return self.robot_config.max_takeoff_speed * self.cell_size
+
+    @property
+    def disable_assist(self) -> bool:
+        return self.robot_config.disable_assist

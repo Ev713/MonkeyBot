@@ -75,6 +75,16 @@ class SmoothBodyHolderTest(unittest.TestCase):
             out = holder.adjust_signal(idle, make_state(body_angle=0.2, body_rate=0.0))
         self.assertLess(abs(out.rotation[1]), 0.05)
 
+    def test_monitor_limb_ids_keeps_holding_while_attach_leg_is_free(self):
+        holder = SmoothBodyHolder(
+            FakeCoordinator(), 1, 2, smooth=0.0, monitor_limb_ids=[0]
+        )
+        idle = empty_control_signal(3)
+        holder.adjust_signal(idle, make_state(body_angle=0.0, body_rate=0.0))
+        out = holder.adjust_signal(idle, make_state(body_angle=0.4, body_rate=0.2))
+        self.assertNotEqual(out.rotation[1], 0.0)
+        self.assertNotEqual(out.rotation[2], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

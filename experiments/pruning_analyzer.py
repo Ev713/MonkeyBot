@@ -75,7 +75,10 @@ def analyze_pruning_combinations(instance_name: str, instances_folder: str = "in
         pruning_start_time = time.perf_counter()
 
         # Call the internal function to get jump transitions
-        transition_links = controller.get_transition_links(for_simplified_problem=simplified)
+        transition_links = controller.get_transition_links(
+            for_simplified_problem=simplified,
+            exhaustive=True,
+        )
 
         pruning_time = time.perf_counter() - pruning_start_time
         # Remove duplicates

@@ -250,6 +250,98 @@ def solve_simplified_problem(
     return SimplifiedGraphPlanner(instance, transition_links).solve(timeout=timeout)
 
 
+def _config_neighbors(
+    cfg: frozenset[Point2D],
+    valid_configs: set[frozenset[Point2D]],
+    *,
+    min_attached: int,
+    num_legs: int,
+    gripping_points: list[Point2D],
+) -> set[frozenset[Point2D]]:
+    neighbors: set[frozenset[Point2D]] = set()
+    if len(cfg) > min_attached:
+        for gp in cfg:
+            smaller = frozenset(cfg - {gp})
+            if smaller in valid_configs:
+                neighbors.add(smaller)
+    if len(cfg) < num_legs:
+        for gp in gripping_points:
+            if gp in cfg:
+                continue
+            larger = frozenset(cfg | {gp})
+            if larger in valid_configs:
+                neighbors.add(larger)
+    return neighbors
+
+
+def compute_attach_config_components(
+    instance: MonkeyBotProblemInstance,
+    *,
+    min_attached: int = 2,
+) -> tuple[dict[frozenset[Point2D], int], dict[int, set[Point2D]]]:
+    """
+    Partition valid attachment configs into connected components using only
+    attach/release moves (no jumps).
+    """
+    planner = SimplifiedGraphPlanner(instance, [], min_attached=min_attached)
+    valid_configs = planner.valid_configs
+    config_component: dict[frozenset[Point2D], int] = {}
+    gps_by_component: dict[int, set[Point2D]] = {}
+    next_id = 0
+
+    for seed in valid_configs:
+        if seed in config_component:
+            continue
+        queue = [seed]
+        config_component[seed] = next_id
+        component_gps: set[Point2D] = set(seed)
+        while queue:
+            cfg = queue.pop()
+            for nbr in _config_neighbors(
+                cfg,
+                valid_configs,
+                min_attached=min_attached,
+                num_legs=planner.num_legs,
+                gripping_points=instance.gripping_points,
+            ):
+                if nbr not in config_component:
+                    config_component[nbr] = next_id
+                    component_gps |= nbr
+                    queue.append(nbr)
+        gps_by_component[next_id] = component_gps
+        next_id += 1
+
+    return config_component, gps_by_component
+
+
+def goal_satisfying_components(
+    instance: MonkeyBotProblemInstance,
+    config_component: dict[frozenset[Point2D], int],
+    *,
+    min_attached: int = 2,
+) -> set[int]:
+    planner = SimplifiedGraphPlanner(instance, [], min_attached=min_attached)
+    goal_components: set[int] = set()
+    for cfg in planner.valid_configs:
+        if len(cfg) != planner.num_legs:
+            continue
+        if all(planner.gp_is_close_enough[gp] for gp in cfg):
+            goal_components.add(config_component[cfg])
+    return goal_components
+
+
+def is_solvable_with_links(
+    instance: MonkeyBotProblemInstance,
+    transition_links: Iterable[tuple],
+    *,
+    min_attached: int = 2,
+) -> bool:
+    return (
+        SimplifiedGraphPlanner(instance, transition_links, min_attached=min_attached).solve()
+        is not None
+    )
+
+
 def analyze_reachability(
     instance: MonkeyBotProblemInstance,
     transition_links: Optional[Iterable[tuple]] = None,

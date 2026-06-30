@@ -14,14 +14,52 @@ from unified_planning.shortcuts import SequentialSimulator
 from monkey_bot import upf_solver
 from monkey_bot.action import parse_action, Action
 import monkey_bot.upf_solver
-from monkey_bot.procedure import MoveCenter, ReleaseGrip, Mixed, Tracker, Grabber, AdjustLength, DynamicCatch, \
+from monkey_bot.procedure import MoveCenter, ReleaseGrip, Mixed, Grabber, AdjustLength, DynamicCatch, \
     MultiOptionalDynamicCatch, ReleaseAtPoint, GetCloser, SmoothBodyHolder, AttachCatch, StabilizeLimbs
 from monkey_bot.signals import ControlSignal, StateSignal, empty_control_signal
 from monkey_bot.config import InstanceSimulationConfig
-from monkey_bot.trajectory_finder import Launcher, GeometricLauncher
+from monkey_bot.trajectory_finder import Launcher, GeometricLauncher, estimate_ballistic_catch_duration
 from monkey_bot.upf_solver import get_problem, solve_problem
-from monkey_bot.simplified_graph_planner import SimplifiedGraphPlanner, analyze_reachability
+from monkey_bot.simplified_graph_planner import (
+    SimplifiedGraphPlanner,
+    analyze_reachability,
+    compute_attach_config_components,
+    goal_satisfying_components,
+    is_solvable_with_links,
+)
 from monkey_bot.coords import Point2D, grid_distance, normalize_point, parse_coord, parse_point_tokens, parse_catch_points
+
+
+def compute_jump_takeoff_point(
+    starting_point: Vec2d,
+    jumping_vector: Vec2d,
+    foot1: Vec2d,
+    foot2: Vec2d,
+    *,
+    dt: float,
+    min_extension: float,
+    max_extension: float,
+) -> Vec2d:
+    """Last runway body position before leg lengths leave [min, max] extension."""
+
+    def in_runway_zone(body_pos: Vec2d) -> bool:
+        for foot in (foot1, foot2):
+            length = (foot - body_pos).length
+            if length < min_extension or length > max_extension:
+                return False
+        return True
+
+    if jumping_vector.length < 1e-9 or not in_runway_zone(starting_point):
+        return starting_point
+
+    take_off_point = starting_point
+    while in_runway_zone(take_off_point):
+        next_point = take_off_point + dt * jumping_vector
+        if not in_runway_zone(next_point):
+            break
+        take_off_point = next_point
+    return take_off_point - dt * jumping_vector * 5
+
 
 class Controller:
     def __init__(self, coordinator:InstanceSimulationConfig, enable_transition_links=True):
@@ -42,6 +80,29 @@ class Controller:
         self.launch_instructions = {}
         self.enable_transitional_links = enable_transition_links
         self._cached_transition_links = None
+
+    def _estimate_jump_catch_duration(
+        self,
+        body_pos: Vec2d,
+        takeoff_vector: Vec2d,
+        catch_screen_points,
+        *,
+        jump_leg_screen_points=None,
+    ):
+        if len(catch_screen_points) < 3:
+            return None
+        return estimate_ballistic_catch_duration(
+            body_pos,
+            takeoff_vector,
+            list(catch_screen_points)[:3],
+            g=self.coordinator.gravity,
+            dt=self.coordinator.dt,
+            max_extension=self.coordinator.max_extension,
+            min_extension=self.coordinator.min_extension,
+            max_x=self.coordinator.sim_config.screen_width,
+            max_y=self.coordinator.sim_config.screen_height,
+            init_jump_leg_points=jump_leg_screen_points,
+        )
 
 
     @property
@@ -297,13 +358,23 @@ class Controller:
 
         assert key in self.launch_instructions
         starting_point, jumping_vector = self.launch_instructions[key]
-        self.procedures = []
-        take_off_point = starting_point
-        while (state_info.feet_pos[jumping_leg_1_id] - take_off_point).length < self.coordinator.max_extension \
-                and (state_info.feet_pos[jumping_leg_2_id] - take_off_point).length < self.coordinator.max_extension:
-            take_off_point += self.coordinator.dt * jumping_vector
-        take_off_point -= self.coordinator.dt * jumping_vector*5
+        runway_speed = (
+            jumping_vector.length
+            * self.coordinator.robot_config.jump_runway_speed_scale
+        )
+        foot1 = state_info.feet_pos[jumping_leg_1_id]
+        foot2 = state_info.feet_pos[jumping_leg_2_id]
+        take_off_point = compute_jump_takeoff_point(
+            starting_point,
+            jumping_vector,
+            foot1,
+            foot2,
+            dt=self.coordinator.dt,
+            min_extension=self.coordinator.min_extension,
+            max_extension=self.coordinator.max_extension,
+        )
 
+        self.procedures = []
         releasers = []
         for i in ignore_legs:
             releasers.append(ReleaseGrip(i, self.coordinator))
@@ -314,14 +385,35 @@ class Controller:
             retractors.append(AdjustLength(i, self.coordinator.min_extension, self.coordinator))
         self.procedures.append(Mixed(retractors, self.coordinator))
 
-        on_position = MoveCenter(tuple(starting_point), self.coordinator, ignore_legs)
+        trace = self.coordinator.robot_config.debug_move_center
+        on_position = MoveCenter(
+            starting_point, self.coordinator, ignore_legs, trace_frames=trace
+        )
+        on_position.move_center_speed = runway_speed
         self.procedures.append(on_position)
-        launch = Mixed([MoveCenter(take_off_point, self.coordinator, ignore_legs),
-                        ReleaseAtPoint(50, take_off_point, self.coordinator)], self.coordinator, finish_at_any=True)
-        launch.move_center_speed = jumping_vector.length
+        runway_move = MoveCenter(
+            take_off_point, self.coordinator, ignore_legs, trace_frames=trace
+        )
+        runway_move.move_center_speed = runway_speed
+        launch = Mixed(
+            [runway_move, ReleaseAtPoint(take_off_point, self.coordinator)],
+            self.coordinator,
+            finish_at_any=True,
+        )
         self.procedures.append(launch)
         screen_catch_points = tuple(self.coordinator.grid_to_screen(*p) for p in (p1, p2, p3))
-        catcher = DynamicCatch(screen_catch_points, state_info, self.coordinator)
+        catch_duration = self._estimate_jump_catch_duration(
+            take_off_point,
+            jumping_vector,
+            screen_catch_points,
+            jump_leg_screen_points=[jumping_leg_1_pos, jumping_leg_2_pos],
+        )
+        catcher = DynamicCatch(
+            screen_catch_points,
+            state_info,
+            self.coordinator,
+            catch_duration=catch_duration,
+        )
         self.procedures.append(catcher)
 
         self.proc_id = 0
@@ -334,87 +426,251 @@ class Controller:
         self.proc_id = 0
 
 
-    def get_transition_links(self, filepath=None, for_simplified_problem=True):
+    def _build_catch_centers_for_gps(
+        self, grip_points: list[Point2D]
+    ) -> dict[Point2D, tuple[Point2D, Point2D, Point2D]]:
+        center_grip_points: dict[Point2D, tuple[Point2D, Point2D, Point2D]] = {}
+        center_radii: dict[Point2D, float] = {}
+        for p1, p2, p3 in itertools.combinations(grip_points, 3):
+            center = self.get_grid_arbitrary_center(p1, p2, p3)
+            if center is None:
+                continue
+            r = max(grid_distance(center, p) for p in (p1, p2, p3))
+            if center in center_grip_points and r >= center_radii[center]:
+                continue
+            center_radii[center] = r
+            center_grip_points[center] = (p1, p2, p3)
+        return center_grip_points
+
+    def _try_add_transition_link(
+        self,
+        init1: Point2D,
+        init2: Point2D,
+        center: Point2D,
+        catch: tuple[Point2D, Point2D, Point2D],
+        *,
+        for_simplified_problem: bool,
+        prune_short_jumps: bool,
+        prune_similar_jumps: bool,
+        seen_configs: set,
+        transition_links: list,
+    ) -> bool:
+        p1, p2, p3 = catch
+        if init1 in catch and init2 in catch:
+            return False
+        max_ext = self.coordinator.instance.max_extension
+        point_pairs_dists = [
+            grid_distance(init1, init2),
+            grid_distance(p1, p2),
+            grid_distance(p2, p3),
+            grid_distance(p3, p1),
+        ]
+        if any(d > 2 * max_ext for d in point_pairs_dists):
+            return False
+
+        if prune_short_jumps:
+            if (
+                grid_distance(center, init1) <= max_ext
+                and grid_distance(center, init2) <= max_ext
+            ):
+                return False
+
+        config_key = None
+        if prune_similar_jumps:
+            reachable = frozenset(self.get_all_catchable_gripping_points(center))
+            config_key = (init1, init2, reachable)
+            if config_key in seen_configs:
+                return False
+
+        launch = self.check_jump_is_possible(
+            self.coordinator.grid_to_screen(*init1),
+            self.coordinator.grid_to_screen(*init2),
+            self.coordinator.grid_to_screen(*p1),
+            self.coordinator.grid_to_screen(*p2),
+            self.coordinator.grid_to_screen(*p3),
+        )
+        if not launch:
+            return False
+
+        if prune_similar_jumps:
+            seen_configs.add(config_key)
+
+        key = self.hash_jump_params(init1, init2, center)
+        self.launch_instructions[key] = launch
+        if for_simplified_problem:
+            transition_links.append((init1, init2, catch))
+        else:
+            transition_links.append((init1, init2, center))
+        return True
+
+    def _iter_cross_component_jump_candidates(
+        self,
+        gps_by_component: dict[int, set[Point2D]],
+        init_comp: int,
+        goal_comps: set[int],
+        *,
+        exhaustive: bool,
+    ):
+        comp_ids = sorted(gps_by_component)
+        pairs: list[tuple[int, int]] = []
+        for goal_comp in sorted(goal_comps):
+            if goal_comp != init_comp:
+                pairs.append((init_comp, goal_comp))
+        if exhaustive:
+            for i, comp_src in enumerate(comp_ids):
+                for comp_dst in comp_ids[i + 1 :]:
+                    if (comp_src, comp_dst) not in pairs:
+                        pairs.append((comp_src, comp_dst))
+        elif not pairs:
+            for comp_dst in comp_ids:
+                if comp_dst != init_comp:
+                    pairs.append((init_comp, comp_dst))
+
+        catch_by_comp = {
+            comp_id: self._build_catch_centers_for_gps(sorted(gps, key=str))
+            for comp_id, gps in gps_by_component.items()
+        }
+
+        for comp_src, comp_dst in pairs:
+            src_gps = sorted(gps_by_component[comp_src], key=str)
+            for init1, init2 in itertools.combinations(src_gps, 2):
+                for center, catch in catch_by_comp[comp_dst].items():
+                    yield init1, init2, center, catch
+
+    def _search_transition_links_legacy(
+        self,
+        *,
+        for_simplified_problem: bool,
+        prune_short_jumps: bool,
+        prune_in_clique_jumps: bool,
+        prune_similar_jumps: bool,
+    ) -> set:
+        transition_links: list = []
+        seen_configs: set = set()
+        cliques = self.find_cliques()
+        reverse_cliques = {
+            gp: i
+            for gp in self.coordinator.instance.gripping_points
+            for i in cliques
+            if gp in cliques[i]
+        }
+        grip_points = self.coordinator.instance.gripping_points
+        center_grip_points = self._build_catch_centers_for_gps(grip_points)
+
+        for (init1, init2), center in itertools.product(
+            itertools.combinations(grip_points, 2), center_grip_points.keys()
+        ):
+            if prune_in_clique_jumps:
+                p1, p2, p3 = center_grip_points[center]
+                if all(
+                    reverse_cliques[p] == reverse_cliques[init1]
+                    for p in (init2, p1, p2, p3)
+                ):
+                    continue
+            self._try_add_transition_link(
+                init1,
+                init2,
+                center,
+                center_grip_points[center],
+                for_simplified_problem=for_simplified_problem,
+                prune_short_jumps=prune_short_jumps,
+                prune_similar_jumps=prune_similar_jumps,
+                seen_configs=seen_configs,
+                transition_links=transition_links,
+            )
+        return set(transition_links)
+
+    def get_transition_links(
+        self,
+        filepath=None,
+        for_simplified_problem=True,
+        *,
+        stop_when_solvable: bool = False,
+        exhaustive: bool = False,
+    ):
         if filepath is not None:
             return self.read_transition_links(filepath)
         if self._cached_transition_links is not None:
             return self._cached_transition_links
-        # Reset launch instructions for a clean run
+
         prune_short_jumps = self.coordinator.robot_config.prune_short_jumps
         prune_in_clique_jumps = self.coordinator.robot_config.prune_in_clique_jumps
         prune_similar_jumps = self.coordinator.robot_config.prune_similar_jumps
         self.launch_instructions = {}
-        transition_links = []
-        seen_configs = set()
-        cliques = self.find_cliques()
-        reverse_cliques = {gp: i for gp in self.coordinator.instance.gripping_points for i in cliques if
-                           gp in cliques[i]}
+        transition_links: list = []
+        seen_configs: set = set()
+        instance = self.coordinator.instance
 
-        grip_points = self.coordinator.instance.gripping_points
-        center_grip_points = {}
-        center_radii = {}
-        for (p1, p2, p3) in itertools.combinations(grip_points, 3):
-            center = self.get_grid_arbitrary_center(p1, p2, p3)
-            if center is None:
+        if exhaustive and not prune_in_clique_jumps:
+            transition_links_set = self._search_transition_links_legacy(
+                for_simplified_problem=for_simplified_problem,
+                prune_short_jumps=prune_short_jumps,
+                prune_in_clique_jumps=prune_in_clique_jumps,
+                prune_similar_jumps=prune_similar_jumps,
+            )
+            self._cached_transition_links = transition_links_set
+            return transition_links_set
+
+        config_component, gps_by_component = compute_attach_config_components(
+            instance
+        )
+        init_cfg = frozenset(gp for gp in instance.init_feet if gp is not None)
+        init_comp = config_component.get(init_cfg)
+        goal_comps = goal_satisfying_components(instance, config_component)
+
+        if init_comp is None:
+            logging.warning(
+                "Initial foot config not in attach component graph; "
+                "falling back to legacy transition-link search"
+            )
+            transition_links_set = self._search_transition_links_legacy(
+                for_simplified_problem=for_simplified_problem,
+                prune_short_jumps=prune_short_jumps,
+                prune_in_clique_jumps=prune_in_clique_jumps,
+                prune_similar_jumps=prune_similar_jumps,
+            )
+            self._cached_transition_links = transition_links_set
+            return transition_links_set
+
+        logging.info(
+            "Attach components: %s (start=%s, goal=%s)",
+            len(gps_by_component),
+            init_comp,
+            sorted(goal_comps),
+        )
+
+        for init1, init2, center, catch in self._iter_cross_component_jump_candidates(
+            gps_by_component,
+            init_comp,
+            goal_comps,
+            exhaustive=exhaustive,
+        ):
+            added = self._try_add_transition_link(
+                init1,
+                init2,
+                center,
+                catch,
+                for_simplified_problem=for_simplified_problem,
+                prune_short_jumps=prune_short_jumps,
+                prune_similar_jumps=prune_similar_jumps,
+                seen_configs=seen_configs,
+                transition_links=transition_links,
+            )
+            if not added:
                 continue
-            r = max([grid_distance(center, p) for p in (p1, p2, p3)])
-            if center in center_grip_points:
-                if r >= center_radii[center]:
-                    continue
-            center_radii[center] = r
-            center_grip_points[center] = (p1, p2, p3)
+            if stop_when_solvable and is_solvable_with_links(
+                instance, transition_links
+            ):
+                logging.info(
+                    "Stopping transition-link search early: %s link(s) connect "
+                    "attach components to the goal",
+                    len(transition_links),
+                )
+                break
 
-        for (init1, init2), center in itertools.product(itertools.combinations(grip_points, 2), center_grip_points.keys()):
-
-            p1, p2, p3 = center_grip_points[center]
-            if init1 in (p1, p2, p3) and init2 in (p1, p2, p3):
-                continue
-            max_ext = self.coordinator.instance.max_extension
-            point_pairs_dists = [grid_distance(init1, init2), grid_distance(p1, p2), grid_distance(p2, p3), grid_distance(p3, p1)]
-            if any(d > 2 * max_ext for d in point_pairs_dists):
-                continue
-
-            # Pruning #1: Trivial Jump Elimination
-            if prune_short_jumps:
-                if (grid_distance(center, init1) <= max_ext and
-                        grid_distance(center, init2) <= max_ext):
-                    continue
-
-            # Pruning #2: Clique/Component Check
-            if prune_in_clique_jumps:
-                if all(reverse_cliques[p] == reverse_cliques[init1] for p in [init2, p1, p2, p3]):
-                    continue
-
-            # Pruning #3: Duplicate Configuration Check (avoids expensive geometric check)
-            config_key = None
-            if prune_similar_jumps:
-                reachable = frozenset(self.get_all_catchable_gripping_points(center))
-                config_key = (init1, init2, reachable)
-                if config_key in seen_configs:
-                    continue
-
-
-            init1_screen = self.coordinator.grid_to_screen(*init1)
-            init2_screen = self.coordinator.grid_to_screen(*init2)
-            p1_screen = self.coordinator.grid_to_screen(*p1)
-            p2_screen = self.coordinator.grid_to_screen(*p2)
-            p3_screen = self.coordinator.grid_to_screen(*p3)
-
-            key = self.hash_jump_params(init1, init2, center)
-            launch = self.check_jump_is_possible(init1_screen, init2_screen, p1_screen, p2_screen, p3_screen)
-
-            if launch:
-                if prune_similar_jumps:
-                    seen_configs.add(config_key)  # Record the new unique configuration
-
-                self.launch_instructions[key] = launch
-                if for_simplified_problem:
-                    transition_links.append((init1, init2, (p1, p2, p3)))
-                else:
-                    transition_links.append((init1, init2, center))
-        transition_links = set(transition_links)
-        self._cached_transition_links = transition_links
-        return transition_links
+        transition_links_set = set(transition_links)
+        self._cached_transition_links = transition_links_set
+        return transition_links_set
 
     def update_current_center(self, action: Action):
         if "move_center"  in action.name:
@@ -437,87 +693,6 @@ class Controller:
         file = open(filepath, "w")
         for key, (start, vec) in self.launch_instructions.items():
             file.write(f"{key}, {tuple(float(x) for x in start)}, {tuple(float(x) for x in vec)}\n")
-
-    def get_transition_links(self, filepath=None, for_simplified_problem=False):
-        if filepath is not None:
-            return self.read_transition_links(filepath)
-        if self._cached_transition_links is not None:
-            return self._cached_transition_links
-        # Reset launch instructions for a clean run
-        prune_short_jumps = self.coordinator.robot_config.prune_short_jumps
-        prune_in_clique_jumps = self.coordinator.robot_config.prune_in_clique_jumps
-        prune_similar_jumps = self.coordinator.robot_config.prune_similar_jumps
-        self.launch_instructions = {}
-        transition_links = []
-        seen_configs = set()
-        cliques = self.find_cliques()
-        reverse_cliques = {gp: i for gp in self.coordinator.instance.gripping_points for i in cliques if
-                           gp in cliques[i]}
-
-        grip_points = self.coordinator.instance.gripping_points
-        center_grip_points = {}
-        center_radii = {}
-        for (p1, p2, p3) in itertools.combinations(grip_points, 3):
-            center = self.get_grid_arbitrary_center(p1, p2, p3)
-            if center is None:
-                continue
-            r = max([grid_distance(center, p) for p in (p1, p2, p3)])
-            if center in center_grip_points:
-                if r >= center_radii[center]:
-                    continue
-            center_radii[center] = r
-            center_grip_points[center] = (p1, p2, p3)
-
-        for (init1, init2), center in itertools.product(itertools.combinations(grip_points, 2), center_grip_points.keys()):
-
-            p1, p2, p3 = center_grip_points[center]
-            if init1 in (p1, p2, p3) and init2 in (p1, p2, p3):
-                continue
-            max_ext = self.coordinator.instance.max_extension
-            point_pairs_dists = [grid_distance(init1, init2), grid_distance(p1, p2), grid_distance(p2, p3), grid_distance(p3, p1)]
-            if any(d > 2 * max_ext for d in point_pairs_dists):
-                continue
-
-            # Pruning #1: Trivial Jump Elimination
-            if prune_short_jumps:
-                if (grid_distance(center, init1) <= max_ext and
-                        grid_distance(center, init2) <= max_ext):
-                    continue
-
-            # Pruning #2: Clique/Component Check
-            if prune_in_clique_jumps:
-                if all(reverse_cliques[p] == reverse_cliques[init1] for p in [init2, p1, p2, p3]):
-                    continue
-
-            # Pruning #3: Duplicate Configuration Check (avoids expensive geometric check)
-            config_key = None
-            if prune_similar_jumps:
-                reachable = frozenset(self.get_all_catchable_gripping_points(center))
-                config_key = (init1, init2, reachable)
-                if config_key in seen_configs:
-                    continue
-
-            init1_screen = self.coordinator.grid_to_screen(*init1)
-            init2_screen = self.coordinator.grid_to_screen(*init2)
-            p1_screen = self.coordinator.grid_to_screen(*p1)
-            p2_screen = self.coordinator.grid_to_screen(*p2)
-            p3_screen = self.coordinator.grid_to_screen(*p3)
-
-            key = self.hash_jump_params(init1, init2, center)
-            launch = self.check_jump_is_possible(init1_screen, init2_screen, p1_screen, p2_screen, p3_screen)
-
-            if launch:
-                if prune_similar_jumps:
-                    seen_configs.add(config_key)  # Record the new unique configuration
-
-                self.launch_instructions[key] = launch
-                if for_simplified_problem:
-                    transition_links.append((init1, init2, (p1, p2, p3)))
-                else:
-                    transition_links.append((init1, init2, center))
-        transition_links = set(transition_links)
-        self._cached_transition_links = transition_links
-        return transition_links
 
     def get_all_catchable_gripping_points(self, center_point):
         return [gp for gp in self.coordinator.instance.gripping_points if
@@ -548,6 +723,7 @@ class Controller:
         return best
 
     def check_jump_is_possible(self, from_1, from_2, p1, p2, p3):
+        rc = self.coordinator.robot_config
         jump_validator = GeometricLauncher(
             self.coordinator.gravity,
             self.coordinator.dt,
@@ -558,7 +734,9 @@ class Controller:
             max_extension=self.coordinator.max_extension,
             min_extension=self.coordinator.min_extension,
             max_take_off_speed=self.coordinator.max_jump_speed,
-            max_average_distance=self.coordinator.max_jump_dist()
+            max_average_distance=self.coordinator.max_jump_dist(),
+            min_runway_limb_alignment_deg=rc.min_runway_limb_alignment_deg,
+            min_limb_vector_angle_deg=rc.min_limb_vector_angle_deg,
         )
 
         start_point, takeoff_vector = jump_validator.suggest_trajectory()
@@ -589,13 +767,23 @@ class Controller:
 
         assert key in self.launch_instructions
         starting_point, jumping_vector = self.launch_instructions[key]
-        self.procedures = []
-        take_off_point = starting_point
-        while (state_info.feet_pos[jumping_leg_1_id] - take_off_point).length < self.coordinator.max_extension \
-                and (state_info.feet_pos[jumping_leg_2_id] - take_off_point).length < self.coordinator.max_extension:
-            take_off_point += self.coordinator.dt * jumping_vector
-        take_off_point -= self.coordinator.dt * jumping_vector*5
+        runway_speed = (
+            jumping_vector.length
+            * self.coordinator.robot_config.jump_runway_speed_scale
+        )
+        foot1 = state_info.feet_pos[jumping_leg_1_id]
+        foot2 = state_info.feet_pos[jumping_leg_2_id]
+        take_off_point = compute_jump_takeoff_point(
+            starting_point,
+            jumping_vector,
+            foot1,
+            foot2,
+            dt=self.coordinator.dt,
+            min_extension=self.coordinator.min_extension,
+            max_extension=self.coordinator.max_extension,
+        )
 
+        self.procedures = []
         releasers = []
         for i in ignore_legs:
             releasers.append(ReleaseGrip(i, self.coordinator))
@@ -606,16 +794,37 @@ class Controller:
             retractors.append(AdjustLength(i, self.coordinator.min_extension, self.coordinator))
         self.procedures.append(Mixed(retractors, self.coordinator))
 
-        on_position = MoveCenter(tuple(starting_point), self.coordinator, ignore_legs)
+        trace = self.coordinator.robot_config.debug_move_center
+        on_position = MoveCenter(
+            starting_point, self.coordinator, ignore_legs, trace_frames=trace
+        )
+        on_position.move_center_speed = runway_speed
         self.procedures.append(on_position)
-        launch = Mixed([MoveCenter(take_off_point, self.coordinator, ignore_legs),
-                        ReleaseAtPoint(50, take_off_point, self.coordinator)], self.coordinator, finish_at_any=True)
-        launch.move_center_speed = jumping_vector.length
+        runway_move = MoveCenter(
+            take_off_point, self.coordinator, ignore_legs, trace_frames=trace
+        )
+        runway_move.move_center_speed = runway_speed
+        launch = Mixed(
+            [runway_move, ReleaseAtPoint(take_off_point, self.coordinator)],
+            self.coordinator,
+            finish_at_any=True,
+        )
         self.procedures.append(launch)
 
         admissable_targets = [self.coordinator.grid_to_screen(*p) for p in self.get_all_catchable_gripping_points((c_x, c_y))]
+        catch_duration = self._estimate_jump_catch_duration(
+            take_off_point,
+            jumping_vector,
+            admissable_targets,
+            jump_leg_screen_points=[jumping_leg_1_pos, jumping_leg_2_pos],
+        )
 
-        catcher = MultiOptionalDynamicCatch(admissable_targets, state_info, self.coordinator)
+        catcher = MultiOptionalDynamicCatch(
+            admissable_targets,
+            state_info,
+            self.coordinator,
+            catch_duration=catch_duration,
+        )
         self.procedures.append(catcher)
 
         move_center = MoveCenter(self.coordinator.grid_to_screen(c_x, c_y), self.coordinator,)
@@ -752,7 +961,10 @@ class SimplifiedProblemController(Controller):
             logging.info("No plan without jumps — computing transition links")
             transition_links = self._cached_transition_links
             if transition_links is None:
-                transition_links = self.get_transition_links(for_simplified_problem=True)
+                transition_links = self.get_transition_links(
+                    for_simplified_problem=True,
+                    stop_when_solvable=True,
+                )
             logging.info(
                 "Retrying with %s transition links",
                 len(transition_links),

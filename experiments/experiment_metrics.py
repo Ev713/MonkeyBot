@@ -299,6 +299,8 @@ def run_jump_trial(run_id, rng, cell_size):
         min_extension=coordinator.min_extension,
         max_take_off_speed=coordinator.max_jump_speed,
         max_average_distance=coordinator.max_jump_dist(),
+        min_runway_limb_alignment_deg=robot_config.min_runway_limb_alignment_deg,
+        min_limb_vector_angle_deg=robot_config.min_limb_vector_angle_deg,
     )
 
     average_start = sum(start_screen, Vec2d(0, 0)) / len(start_screen)

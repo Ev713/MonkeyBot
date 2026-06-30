@@ -192,6 +192,28 @@ class GripRetryTest(unittest.TestCase):
             catcher.adjust_signal(signal, near_center)
             body_holder.assert_called_once()
 
+    def test_check_and_grip_snaps_foot_to_gp_center(self):
+        gp = self.coordinator.grid_to_screen(6, 8)
+        self.simulator.release_grip(0)
+        foot_body, _ = self.simulator.feet[0]
+        offset = self.simulator.grip_tolerance * 0.5
+        foot_body.position = (gp.x + offset, gp.y)
+        self.assertTrue(self.simulator.check_and_grip(0))
+        self.assertAlmostEqual(foot_body.position.x, gp.x, places=2)
+        self.assertAlmostEqual(foot_body.position.y, gp.y, places=2)
+
+    def test_check_and_grip_skips_snap_when_assist_disabled(self):
+        self.coordinator.robot_config.disable_assist = True
+        gp = self.coordinator.grid_to_screen(6, 8)
+        self.simulator.release_grip(0)
+        foot_body, _ = self.simulator.feet[0]
+        offset = self.simulator.grip_tolerance * 0.5
+        start = (gp.x + offset, gp.y)
+        foot_body.position = start
+        self.assertTrue(self.simulator.check_and_grip(0))
+        self.assertAlmostEqual(foot_body.position.x, start[0], places=2)
+        self.assertAlmostEqual(foot_body.position.y, start[1], places=2)
+
     def test_grabber_requests_grip_only_when_close(self):
         gp = self.coordinator.grid_to_screen(6, 8)
         grabber = Grabber(0, gp, self.coordinator)
